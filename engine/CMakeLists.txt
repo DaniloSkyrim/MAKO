@@ -101,11 +101,44 @@ set(MAKO_LAYER_MANIFEST_SUFFIX "" CACHE STRING "Suffix for the installed Vulkan 
 option(MAKO_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purposes" OFF)
 # === READ HERE FOR BUILD OPTIONS ===
 
+# Native host architecture of the package this build belongs to. It is a
+# package property, separate from Vulkan process bitness: the x86_64 package
+# also carries 32-bit x86 layers built with -m32 on the same host, while the
+# AArch64 package carries only 64-bit AArch64 layers. Installers and launchers
+# read the installed record to choose architecture-specific layer names and to
+# refuse a payload built for another native host.
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" MAKO_SYSTEM_PROCESSOR)
+if(MAKO_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|x64|i[3-6]86|x86)$")
+    set(MAKO_DEFAULT_HOST_ARCHITECTURE "x86_64")
+elseif(MAKO_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|armv8.*)$")
+    set(MAKO_DEFAULT_HOST_ARCHITECTURE "aarch64")
+else()
+    message(FATAL_ERROR
+        "MAKO Renderer supports x86_64 and aarch64 Linux hosts; "
+        "CMAKE_SYSTEM_PROCESSOR is '${CMAKE_SYSTEM_PROCESSOR}'")
+endif()
+set(MAKO_HOST_ARCHITECTURE "${MAKO_DEFAULT_HOST_ARCHITECTURE}" CACHE STRING
+    "Native host architecture recorded in the installed package (x86_64 or aarch64)")
+set_property(CACHE MAKO_HOST_ARCHITECTURE PROPERTY STRINGS x86_64 aarch64)
+if(NOT MAKO_HOST_ARCHITECTURE STREQUAL MAKO_DEFAULT_HOST_ARCHITECTURE)
+    message(FATAL_ERROR
+        "MAKO_HOST_ARCHITECTURE=${MAKO_HOST_ARCHITECTURE} does not match the "
+        "target processor ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+if(MAKO_HOST_ARCHITECTURE STREQUAL "aarch64" AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "32-bit Arm layers are not part of the AArch64 package")
+endif()
+message(STATUS "MAKO package host architecture: ${MAKO_HOST_ARCHITECTURE}")
+
 if(MAKO_BUILD_VK_LAYER)
     install(PROGRAMS
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-launch"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-vrr-lease"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/host-architecture"
+        "${MAKO_HOST_ARCHITECTURE}\n")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/host-architecture"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/mako-render")
 endif()
 
 if(BUILD_TESTING AND UNIX)

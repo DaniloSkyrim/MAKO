@@ -16,7 +16,7 @@ Open the <a href="https://github.com/eugeniosegala/MAKO/releases/latest" target=
 
 For direct Vulkan-layer installation without Decky, open the <a href="https://github.com/eugeniosegala/MAKO/releases/tag/render-v4.6.0" target="_blank" rel="noopener noreferrer">latest MAKO Renderer release</a> and download the Linux archive under **Assets**.
 
-Published MAKO Renderer packages target x86_64 Linux hosts, with 64-bit and 32-bit x86 game-process layers. MAKO Decky safely refuses incompatible native AArch64/Armada installation; see <a href="docs/ARMADA.md" target="_blank" rel="noopener noreferrer">Armada and native AArch64 support</a> for that boundary.
+Published MAKO Renderer packages target x86_64 Linux hosts, with 64-bit and 32-bit x86 game-process layers. Source-built AArch64 tester packages install natively on DroidDeck; MAKO Decky refuses a package built for another ISA and stays disabled on Armada. See <a href="docs/ARMADA.md" target="_blank" rel="noopener noreferrer">Armada, DroidDeck, and native AArch64 support</a> for that boundary.
 
 ## What it manages
 

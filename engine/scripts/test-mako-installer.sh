@@ -28,6 +28,13 @@ chmod 0755 "$package_root/bin/mako-ui"
 printf '%s\n' '[Desktop Entry]' 'Name=MAKO Renderer Configuration' 'Exec=mako-ui' > "$package_root/share/applications/io.github.eugeniosegala.mako.desktop"
 printf '%s\n' '[Desktop Entry]' 'Name=Uninstall MAKO Renderer' 'Exec=mako-installer --uninstall' > "$package_root/share/applications/io.github.eugeniosegala.mako.uninstaller.desktop"
 printf '%s\n' 'test-version' > "$package_root/MAKO-Renderer-version.txt"
+# The payload records the native ISA it was built for; match this test host.
+case "$(uname -m)" in
+    aarch64|arm64) host_arch=aarch64 foreign_arch=x86_64 ;;
+    *) host_arch=x86_64 foreign_arch=aarch64 ;;
+esac
+mkdir -p "$package_root/share/mako-render"
+printf '%s\n' "$host_arch" > "$package_root/share/mako-render/host-architecture"
 (
     cd "$package_root"
     find bin share -type f -print | LC_ALL=C sort | xargs sha256sum
@@ -342,5 +349,33 @@ MAKO_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
     "$remote_prefix/bin/mako-installer" --uninstall --purge-configuration >/dev/null
 [[ ! -e "$remote_prefix/bin/mako-ui" && ! -e "$remote_config/mako-render" ]] ||
     fail "successful restoration did not allow uninstall"
+
+# A payload for another ISA must be refused before anything is installed.
+foreign_root="$test_root/foreign-package"
+foreign_prefix="$test_root/foreign-install"
+cp -a "$package_root" "$foreign_root"
+printf '%s\n' "$foreign_arch" > "$foreign_root/share/mako-render/host-architecture"
+(
+    cd "$foreign_root"
+    find bin share -type f -print | LC_ALL=C sort | xargs sha256sum
+) > "$foreign_root/MAKO-Renderer-install-manifest.txt"
+if MAKO_INSTALL_PREFIX="$foreign_prefix" XDG_CONFIG_HOME="$test_root/foreign-config" \
+        "$foreign_root/Install MAKO Renderer" --install >"$test_root/foreign.log" 2>&1; then
+    fail "installer accepted a $foreign_arch payload on a $host_arch host"
+fi
+grep -Fq "built for $foreign_arch, but this system is $host_arch" "$test_root/foreign.log" ||
+    fail "foreign-architecture refusal did not name both architectures"
+[[ ! -e "$foreign_prefix/bin/mako-ui" ]] || fail "foreign-architecture refusal installed files"
+# An architecture record outside the checksummed manifest is not trusted.
+printf '%s\n' "$host_arch" > "$foreign_root/share/mako-render/host-architecture"
+grep -v 'share/mako-render/host-architecture$' "$foreign_root/MAKO-Renderer-install-manifest.txt" \
+    > "$test_root/uncovered.sha256"
+cp "$test_root/uncovered.sha256" "$foreign_root/MAKO-Renderer-install-manifest.txt"
+if MAKO_INSTALL_PREFIX="$foreign_prefix" XDG_CONFIG_HOME="$test_root/foreign-config" \
+        "$foreign_root/Install MAKO Renderer" --install >"$test_root/uncovered.log" 2>&1; then
+    fail "installer trusted an architecture record outside its install manifest"
+fi
+grep -Fq 'architecture record is not covered' "$test_root/uncovered.log" ||
+    fail "uncovered architecture record was not reported"
 
 printf '%s\n' 'mako-installer contract test passed'

@@ -28,6 +28,40 @@ printf '%s\n' 'version=1' 'disable_steam_overlay=0' > "$overlay_enabled_config"
 export XDG_RUNTIME_DIR="$test_root/runtime"
 mkdir -m 700 "$XDG_RUNTIME_DIR"
 expected_layer_path="$install_prefix/share/mako-render/vulkan/implicit_layer.d"
+# Overlay and vkBasalt expectations follow the launcher's recorded package
+# architecture; a launcher without a record is a legacy x86_64 package.
+launcher_arch=x86_64
+if [[ -r "$install_prefix/share/mako-render/host-architecture" ]]; then
+    read -r launcher_arch < "$install_prefix/share/mako-render/host-architecture"
+fi
+case "$launcher_arch" in
+    x86_64|aarch64) ;;
+    *) fail "unexpected launcher host architecture: $launcher_arch" ;;
+esac
+# Install the Steam Desktop overlay manifests the given architecture's Steam
+# client writes. The ARM client manifest is admitted by content, never by an
+# x86 file name, so AArch64 fixtures also leave decoy x86 names in place.
+add_steam_overlay_fixture() {
+    local arch="$1"
+    touch "$steam_overlay_dir/steamoverlay_x86_64.json"
+    touch "$steam_overlay_dir/steamoverlay_i386.json"
+    if [[ "$arch" == aarch64 ]]; then
+        printf '%s\n' '{"layer": {"name": "VK_LAYER_VALVE_steam_overlay_64"}}' \
+            > "$steam_overlay_dir/steamoverlay_arm64.json"
+    fi
+}
+remove_steam_overlay_fixture() {
+    rm -f "$steam_overlay_dir/steamoverlay_x86_64.json" \
+        "$steam_overlay_dir/steamoverlay_i386.json" \
+        "$steam_overlay_dir/steamoverlay_arm64.json"
+}
+steam_overlay_chain() {
+    if [[ "$1" == aarch64 ]]; then
+        printf 'VK_LAYER_VALVE_steam_overlay_64'
+    else
+        printf 'VK_LAYER_VALVE_steam_overlay_64:VK_LAYER_VALVE_steam_overlay_32'
+    fi
+}
 if [[ ! -d "$expected_layer_path" && -d "$test_data_home/mako-render/vulkan/implicit_layer.d" ]]; then
     expected_layer_path="$test_data_home/mako-render/vulkan/implicit_layer.d"
 elif [[ ! -d "$expected_layer_path" ]]; then
@@ -74,8 +108,7 @@ fi
 
 steam_overlay_dir="$test_data_home/vulkan/implicit_layer.d"
 mkdir -p "$steam_overlay_dir"
-touch "$steam_overlay_dir/steamoverlay_x86_64.json"
-touch "$steam_overlay_dir/steamoverlay_i386.json"
+add_steam_overlay_fixture "$launcher_arch"
 desktop_overlay_output="$({
     MAKO_LAUNCH_CONFIG="$overlay_enabled_config" \
     ENABLE_VK_LAYER_VALVE_steam_overlay_1=1 \
@@ -91,7 +124,7 @@ desktop_overlay_output="$({
                 "${VK_ADD_LAYER_PATH:-unset}"
         '
 } 2>&1)" || fail "Desktop Steam overlay preservation failed: $desktop_overlay_output"
-expected_desktop_overlay="$(printf 'unset\nVK_LAYER_MAKO_render:VK_LAYER_VALVE_steam_overlay_64:VK_LAYER_VALVE_steam_overlay_32:VK_LAYER_existing\n%s:/caller/explicit\n/caller/additional-explicit' "$steam_overlay_dir")"
+expected_desktop_overlay="$(printf 'unset\nVK_LAYER_MAKO_render:%s:VK_LAYER_existing\n%s:/caller/explicit\n/caller/additional-explicit' "$(steam_overlay_chain "$launcher_arch")" "$steam_overlay_dir")"
 if [[ "$desktop_overlay_output" != "$expected_desktop_overlay" ]]; then
     fail "Desktop Steam overlay was not ordered after MAKO:\n$desktop_overlay_output"
 fi
@@ -126,8 +159,7 @@ flatpak_overlay_output="$({
 if [[ "$flatpak_overlay_output" != $'unset\nunset' ]]; then
     fail "Flatpak unexpectedly used Desktop Steam overlay preservation:\n$flatpak_overlay_output"
 fi
-rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
-rm -f "$steam_overlay_dir/steamoverlay_i386.json"
+remove_steam_overlay_fixture
 
 # Load synthetic hooks through the actual dynamic linker, then check symbol
 # visibility in the final application rather than just printing LD_PRELOAD.
@@ -167,7 +199,7 @@ preload_output="$(
     "$launcher" "$test_root/preload/probe" 2> "$test_root/preload/stderr"
 )" || fail "default Steam preload removal failed"
 [[ "$preload_output" == 'overlay=0 retained=1' ]] || fail "default launch retained Steam input hooks"
-touch "$steam_overlay_dir/steamoverlay_x86_64.json"
+add_steam_overlay_fixture "$launcher_arch"
 preload_output="$(
     env -u GAMESCOPE_WAYLAND_DISPLAY \
     MAKO_LAUNCH_CONFIG="$overlay_enabled_config" \
@@ -186,7 +218,7 @@ desktop_disabled_output="$(
     "$launcher" bash -c 'printf "%s\n" "${VK_INSTANCE_LAYERS:-unset}" "${DISABLE_VK_LAYER_VALVE_steam_overlay_1:-unset}"; exec "$1"' _ "$test_root/preload/probe" 2> "$test_root/preload/stderr"
 )" || fail "Desktop overlay disable setting failed"
 [[ "$desktop_disabled_output" == $'VK_LAYER_existing\n1\noverlay=0 retained=1' ]] || fail "Desktop overlay request bypassed the default Performance setting"
-rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
+remove_steam_overlay_fixture
 
 allow_output="$({
     DISABLE_LSFG=1 DISABLE_LSFGVK=1 ENABLE_GAMESCOPE_WSI=1 \
@@ -234,6 +266,8 @@ mkdir -p "$private_prefix/bin" "$private_mako_layer_dir" "$private_vkbasalt_laye
     "$(dirname -- "$private_vkbasalt_library32")"
 cp -- "$launcher" "$private_launcher"
 chmod +x "$private_launcher"
+mkdir -p "$private_prefix/share/mako-render"
+printf 'x86_64\n' > "$private_prefix/share/mako-render/host-architecture"
 touch "$private_mako_layer_dir/VkLayer_MAKO_render.json"
 touch "$private_mako_layer_dir/VkLayer_MAKO_render.x86.json"
 touch "$private_vkbasalt_layer_dir/vkBasalt.json"
@@ -242,8 +276,7 @@ touch "$private_vkbasalt_library64"
 touch "$private_vkbasalt_library32"
 vkbasalt_config="$test_root/vkBasalt.conf"
 printf '%s\n' 'effects = cas' > "$vkbasalt_config"
-touch "$steam_overlay_dir/steamoverlay_x86_64.json"
-touch "$steam_overlay_dir/steamoverlay_i386.json"
+add_steam_overlay_fixture x86_64
 
 vkbasalt_output="$({
     MAKO_LAUNCH_CONFIG="$overlay_enabled_config" \
@@ -272,8 +305,7 @@ expected_vkbasalt="$(printf 'unset\nunset\nunset\n%s\n1\nVK_LAYER_MAKO_render:VK
 if [[ "$vkbasalt_output" != "$expected_vkbasalt" ]]; then
     fail "private vkBasalt order or isolation changed:\n$vkbasalt_output"
 fi
-rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
-rm -f "$steam_overlay_dir/steamoverlay_i386.json"
+remove_steam_overlay_fixture
 
 rm -f -- "$private_vkbasalt_library32"
 missing_vkbasalt_output="$({
@@ -309,6 +341,60 @@ unreadable_vkbasalt_output="$({
 if [[ "$unreadable_vkbasalt_output" != *"vkBasalt config is not readable"* ||
         "$unreadable_vkbasalt_output" != *"MAKO=1 VKBASALT=1 CONFIG=unset INSTANCE=unset"* ]]; then
     fail "unreadable vkBasalt config did not fail closed:\n$unreadable_vkbasalt_output"
+fi
+
+# AArch64 packages are 64-bit only: the private vkBasalt payload needs no lib32
+# copy, and the ARM Steam overlay manifest is admitted by its declared layer.
+arm_prefix="$test_root/arm-prefix"
+arm_launcher="$arm_prefix/bin/mako-launch"
+arm_mako_layer_dir="$arm_prefix/share/mako-render/vulkan/implicit_layer.d"
+arm_vkbasalt_layer_dir="$arm_prefix/share/mako-render/vulkan/vkbasalt.d"
+mkdir -p "$arm_prefix/bin" "$arm_mako_layer_dir" "$arm_vkbasalt_layer_dir" \
+    "$arm_prefix/lib/vkbasalt"
+cp -- "$launcher" "$arm_launcher"
+chmod +x "$arm_launcher"
+printf 'aarch64\n' > "$arm_prefix/share/mako-render/host-architecture"
+touch "$arm_mako_layer_dir/VkLayer_MAKO_render.json"
+touch "$arm_vkbasalt_layer_dir/vkBasalt.json"
+touch "$arm_prefix/lib/vkbasalt/libvkbasalt.so"
+add_steam_overlay_fixture aarch64
+arm_vkbasalt_output="$({
+    MAKO_LAUNCH_CONFIG="$overlay_enabled_config" \
+    ENABLE_VK_LAYER_VALVE_steam_overlay_1=1 \
+        ENABLE_VKBASALT=1 \
+        VKBASALT_CONFIG_FILE="$vkbasalt_config" \
+        VK_INSTANCE_LAYERS="VK_LAYER_existing:VK_LAYER_MANGOHUD_overlay_aarch64" \
+        XDG_DATA_HOME="$test_data_home" \
+        "$arm_launcher" bash -c '
+            printf "%s\n" \
+                "${ENABLE_MAKO:-unset}" \
+                "${DISABLE_VKBASALT:-unset}" \
+                "${VK_INSTANCE_LAYERS:-unset}" \
+                "${VK_IMPLICIT_LAYER_PATH:-unset}"
+        '
+} 2>&1)" || fail "AArch64 private vkBasalt launch failed: $arm_vkbasalt_output"
+expected_arm_vkbasalt="$(printf 'unset\nunset\nVK_LAYER_MAKO_render:VK_LAYER_VKBASALT_post_processing:VK_LAYER_VALVE_steam_overlay_64:VK_LAYER_existing\n%s:%s' \
+    "$arm_mako_layer_dir" "$arm_vkbasalt_layer_dir")"
+if [[ "$arm_vkbasalt_output" != "$expected_arm_vkbasalt" ]]; then
+    fail "AArch64 vkBasalt or Steam overlay chain changed:\n$arm_vkbasalt_output"
+fi
+remove_steam_overlay_fixture
+rm -f -- "$arm_prefix/lib/vkbasalt/libvkbasalt.so"
+arm_missing_output="$({
+    ENABLE_VKBASALT=1 XDG_DATA_HOME="$test_data_home" \
+        "$arm_launcher" bash -c 'printf "MAKO=%s VKBASALT=%s\n" "${ENABLE_MAKO:-unset}" "${DISABLE_VKBASALT:-unset}"'
+} 2>&1)" || fail "missing AArch64 vkBasalt did not continue with MAKO"
+if [[ "$arm_missing_output" != *"private aarch64 vkBasalt payload is unavailable"* ||
+        "$arm_missing_output" != *"MAKO=1 VKBASALT=1"* ]]; then
+    fail "missing AArch64 vkBasalt did not fail closed:\n$arm_missing_output"
+fi
+printf 'riscv64\n' > "$arm_prefix/share/mako-render/host-architecture"
+set +e
+unsupported_arch_output="$({ "$arm_launcher" true; } 2>&1)"
+unsupported_arch_status=$?
+set -e
+if [[ $unsupported_arch_status -ne 1 || "$unsupported_arch_output" != *"unsupported package host architecture: riscv64"* ]]; then
+    fail "an unsupported package architecture record did not fail closed"
 fi
 
 launch_config="$test_config_home/mako-render/launcher.conf"

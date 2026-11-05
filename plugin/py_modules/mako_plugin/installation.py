@@ -26,16 +26,20 @@ from .constants import (
     MAKO_LAYER_BUILD_MARKER, SPATIAL_SCALING_LAYER_BUILD_MARKER,
     MAKO_PROFILE_FALLBACK_MARKER,
     GAMESCOPE_WSI_DISABLE_ENV, GAMESCOPE_WSI_ENABLE_ENV,
-    GAMESCOPE_WSI_LAYER_NAME_64, GAMESCOPE_WSI_MANIFEST_FILENAME_64,
+    GAMESCOPE_WSI_MANIFEST_FILENAME_64,
     GAMESCOPE_WSI_LIBRARY_FILENAME_64,
-    MANGOHUD_LAYER_NAME_64, MANGOHUD_MANIFEST_FILENAME_64,
-    MANGOHUD_LAYER_NAME_32, MANGOHUD_MANIFEST_FILENAME_32,
+    MANGOHUD_MANIFEST_FILENAME_64,
+    MANGOHUD_MANIFEST_FILENAME_32,
     VKBASALT_LAYER_NAME_64, VKBASALT_MANIFEST_FILENAME_64,
     VKBASALT_LAYER_NAME_32, VKBASALT_MANIFEST_FILENAME_32,
     VKBASALT_LIB_FILENAME,
     VKBASALT_SHADER_DIR, VKBASALT_SHADER_ASSET_FILENAMES,
     VKBASALT_LAYER_ENABLE_ENV, VKBASALT_LAYER_DISABLE_ENV,
     HOST_SYSTEM_IMPLICIT_LAYER_DIR,
+    LEGACY_RENDERER_HOST_ARCHITECTURE,
+    RENDERER_HOST_ARCHITECTURE_RECORD,
+    SUPPORTED_RENDERER_HOST_ARCHITECTURES,
+    host_layer_identities,
     ARMADA_DEVICE_ENV,
     ACTIVE_RENDERER_STATE_FILENAME,
     ACTIVE_RENDERER_STATE_SCHEMA_VERSION,
@@ -46,7 +50,11 @@ from .constants import (
 )
 from .config_schema import ConfigurationManager, DEFAULT_PROFILE_NAME
 from .remote_play_launch import SDR_HELPER_RELATIVE_PATH
-from .host_environment import detect_host_environment
+from .host_environment import _elf_host_architecture, detect_host_environment
+from .renderer_package import (
+    RendererArchiveMetadata,
+    read_bundled_renderer_metadata,
+)
 from .layer_manifests import manifest_owner
 from .managed_files import (
     copy_managed_file_atomically,
@@ -54,16 +62,6 @@ from .managed_files import (
     write_managed_text_atomically,
 )
 from .types import InstallationResponse, UninstallationResponse, InstallationCheckResponse
-
-
-class RendererArchiveMetadata(TypedDict):
-    """Validated Renderer payload metadata consumed by installation."""
-
-    name: str
-    version: str
-    sha256hash: str
-    architectures: list[str]
-    host_architectures: list[str]
 
 
 class InstalledEngineStateRequired(TypedDict):
@@ -157,6 +155,9 @@ class InstallationService(BaseService):
         self.vrr_lease_file = self.user_home / CLI_DIR / VRR_LEASE_FILENAME
         self.remote_play_sdr_file = self.user_home / '.local' / SDR_HELPER_RELATIVE_PATH
         self.engine_state_file = self.local_lib_dir.parent / "installed-engine.json"
+        self.renderer_host_architecture_file = (
+            self.local_lib_dir.parent / RENDERER_HOST_ARCHITECTURE_RECORD
+        )
         self.active_renderer_state_file = (
             self.local_lib_dir.parent / ACTIVE_RENDERER_STATE_FILENAME
         )
@@ -254,74 +255,7 @@ class InstallationService(BaseService):
     def _bundled_archive_metadata(
             self, plugin_dir: Path) -> RendererArchiveMetadata:
         """Return the versioned host payload metadata from package.json."""
-        manifest_path = plugin_dir / "package.json"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if "bundled_renderer" in manifest:
-                if "remote_binary" in manifest:
-                    raise ValueError(
-                        "package.json must not define both bundled_renderer and remote_binary"
-                    )
-                binary = manifest["bundled_renderer"]
-                metadata_name = "bundled_renderer"
-                if not isinstance(binary, dict):
-                    raise ValueError("bundled_renderer must be an object")
-            else:
-                binaries = manifest.get("remote_binary")
-                if not isinstance(binaries, list) or len(binaries) != 1:
-                    raise ValueError(
-                        "package.json must define bundled_renderer or exactly one "
-                        "remote_binary entry"
-                    )
-                binary = binaries[0]
-                metadata_name = "remote_binary"
-            archive_name = binary.get("name")
-            version = binary.get("version")
-            checksum = binary.get("sha256hash")
-            architectures = binary.get("architectures", ["64", "32"])
-            host_architectures = binary.get("host_architectures", ["x86_64"])
-            if not isinstance(archive_name, str) or Path(archive_name).name != archive_name:
-                raise ValueError(f"{metadata_name} name must be a filename")
-            if not isinstance(version, str) or not version:
-                raise ValueError(f"{metadata_name} version must be a non-empty string")
-            if (
-                not isinstance(checksum, str)
-                or len(checksum) != 64
-                or any(character not in "0123456789abcdefABCDEF" for character in checksum)
-            ):
-                raise ValueError(
-                    f"{metadata_name} sha256hash must be a SHA-256 checksum"
-                )
-            if (
-                not isinstance(architectures, list)
-                or not architectures
-                or any(architecture not in ("64", "32") for architecture in architectures)
-                or "64" not in architectures
-            ):
-                raise ValueError(
-                    f"{metadata_name} architectures must contain 64 and optional 32"
-                )
-            if (
-                not isinstance(host_architectures, list)
-                or not host_architectures
-                or any(
-                    architecture not in ("x86_64", "aarch64")
-                    for architecture in host_architectures
-                )
-            ):
-                raise ValueError(
-                    f"{metadata_name} host_architectures must contain supported native "
-                    "host names"
-                )
-            return {
-                "name": archive_name,
-                "version": version,
-                "sha256hash": checksum,
-                "architectures": architectures,
-                "host_architectures": host_architectures,
-            }
-        except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
-            raise OSError(f"Could not read bundled MAKO Renderer metadata from {manifest_path}: {exc}") from exc
+        return read_bundled_renderer_metadata(plugin_dir)
 
     def _write_engine_state(
             self, archive_metadata: RendererArchiveMetadata) -> None:
@@ -349,24 +283,58 @@ class InstallationService(BaseService):
             armada_marker=ARMADA_DEVICE_ENV,
         ).native_architecture
 
+    @staticmethod
+    def _is_armada_host() -> bool:
+        """Return whether Armada's root-owned device marker is present."""
+        return ARMADA_DEVICE_ENV.is_file()
+
     def _host_compatibility(
             self,
             archive_metadata: RendererArchiveMetadata,
     ) -> tuple[str, bool, Optional[str]]:
         """Return the detected host, support result, and a stable user message."""
         detected = self._detect_native_host_architecture()
-        supported = archive_metadata.get("host_architectures", ["x86_64"])
+        supported = archive_metadata.get(
+            "host_architectures", [LEGACY_RENDERER_HOST_ARCHITECTURE]
+        )
         if detected in supported:
+            if detected == "aarch64" and self._is_armada_host():
+                # Armada launches Steam through FEX and armada-game-launch;
+                # that path has no hardware evidence. See docs/ARMADA.md.
+                return detected, False, (
+                    "MAKO Renderer is disabled on Armada: native AArch64 "
+                    "activation through armada-game-launch has not been "
+                    "validated. Games remain on their normal Armada launch path."
+                )
             return detected, True, None
 
         supported_text = ", ".join(supported)
+        if detected == "aarch64":
+            return detected, False, (
+                "MAKO Renderer is disabled on this host: this package supports "
+                f"native host architecture {supported_text}, but this device is "
+                f"{detected}. This package does not include a validated "
+                "native Armada/AArch64 Renderer; install the AArch64 MAKO Decky "
+                "package instead. Games remain on their normal Armada launch "
+                "path."
+            )
         return detected, False, (
             "MAKO Renderer is disabled on this host: this package supports "
             f"native host architecture {supported_text}, but this device is "
-            f"{detected}. The current release does not include a validated "
-            "native Armada/AArch64 Renderer. Games remain on their normal "
-            "Armada launch path."
+            f"{detected}. Install the MAKO Decky package built for {detected}."
         )
+
+    def _renderer_host_architecture(self) -> str:
+        """Return the native ISA of the Renderer this package installs."""
+        try:
+            metadata = self._bundled_archive_metadata(PLUGIN_ROOT)
+        except OSError:
+            # Unreadable metadata keeps the published x86_64 identity, so an
+            # incompatible host still fails closed.
+            return LEGACY_RENDERER_HOST_ARCHITECTURE
+        return metadata.get(
+            "host_architectures", [LEGACY_RENDERER_HOST_ARCHITECTURE]
+        )[0]
 
     def current_package_host_compatibility(
             self) -> tuple[str, bool, Optional[str]]:
@@ -569,18 +537,110 @@ class InstallationService(BaseService):
             optional_32bit_archive=optional_32bit_destinations,
             # Published 4.0 archives predate native Remote Play. They remain
             # installable; enabling the override requires the current helper.
+            # Archives older than the package architecture record are
+            # x86_64; AArch64 archives never contain the x86-only helper.
             optional_archive={f"bin/{CLI_FILENAME}": self.cli_file,
                               f"bin/{SHADER_TOOL_FILENAME}": self.cli_file.with_name(SHADER_TOOL_FILENAME),
-                              SDR_HELPER_RELATIVE_PATH: self.remote_play_sdr_file},
+                              SDR_HELPER_RELATIVE_PATH: self.remote_play_sdr_file,
+                              f"share/mako-render/{RENDERER_HOST_ARCHITECTURE_RECORD}":
+                                  self.renderer_host_architecture_file},
+            # Guarded host-layer copies cover every supported ISA so cleanup
+            # never strands a file left by a package for another host.
             generated=(
                 self.registered_json_file, self.registered_json32_file,
-                self.gamescope_wsi_compatibility_manifest,
-                self.gamescope_wsi_compatibility_library,
-                self.mangohud_manifest, self.mangohud_manifest32,
+                *(
+                    path
+                    for architecture in SUPPORTED_RENDERER_HOST_ARCHITECTURES
+                    for path in self._host_layer_destinations(architecture)
+                    if path is not None
+                ),
                 self.engine_state_file, self.active_renderer_state_file,
                 self.mako_script_path, self.diagnostics_script_path,
             ),
         )
+
+    def _host_layer_destinations(
+            self, architecture: str,
+    ) -> tuple[Path, Path, Path, Optional[Path]]:
+        """Return guarded host-layer copies for one native Renderer ISA.
+
+        Order: Gamescope WSI manifest, its library, 64-bit MangoHud manifest,
+        and the 32-bit MangoHud manifest where that host has one.
+        """
+        if architecture == LEGACY_RENDERER_HOST_ARCHITECTURE:
+            return (
+                self.gamescope_wsi_compatibility_manifest,
+                self.gamescope_wsi_compatibility_library,
+                self.mangohud_manifest,
+                self.mangohud_manifest32,
+            )
+        identities = host_layer_identities(architecture)
+        return (
+            self.gamescope_wsi_compatibility_dir
+            / identities.gamescope_wsi_manifest_filename,
+            self.gamescope_wsi_compatibility_dir
+            / identities.gamescope_wsi_library_filename,
+            self.mangohud_layer_dir / identities.mangohud_manifest_filename_64,
+            None if identities.mangohud_manifest_filename_32 is None
+            else self.mangohud_layer_dir / identities.mangohud_manifest_filename_32,
+        )
+
+    def _foreign_host_layer_destinations(self, architecture: str) -> list[Path]:
+        """Return guarded host-layer copies owned by every other native ISA."""
+        return [
+            path
+            for other in SUPPORTED_RENDERER_HOST_ARCHITECTURES
+            if other != architecture
+            for path in self._host_layer_destinations(other)
+            if path is not None
+        ]
+
+    def _validate_payload_host_architecture(
+            self,
+            staged_files: Dict[Path, tuple[Path, str]],
+            native_binaries: tuple[Path, ...],
+            has_32bit_library: bool,
+    ) -> None:
+        """Reject a payload whose ELF ISA differs from its package metadata.
+
+        The checksum proves the archive is the pinned one; this proves the
+        pinned archive was built for the host the package declares, so a
+        mislabeled package cannot expose foreign code to the Vulkan loader.
+        """
+        expected = self._renderer_host_architecture()
+        record = staged_files.get(self.renderer_host_architecture_file)
+        if record is not None:
+            try:
+                recorded = record[0].read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as error:
+                raise OSError(
+                    f"Could not read the MAKO Renderer host architecture record: {error}"
+                ) from error
+            if recorded != expected:
+                raise OSError(
+                    "MAKO Renderer archive records host architecture "
+                    f"{recorded!r}, but this package declares {expected}"
+                )
+        elif expected != LEGACY_RENDERER_HOST_ARCHITECTURE:
+            raise OSError(
+                "MAKO Renderer archive is missing its host architecture record"
+            )
+        if expected != "x86_64" and has_32bit_library:
+            raise OSError(
+                f"MAKO Renderer {expected} archives must not contain 32-bit layers"
+            )
+        for binary in native_binaries:
+            try:
+                actual = _elf_host_architecture(binary)
+            except OSError as error:
+                raise OSError(
+                    f"Could not inspect MAKO Renderer binary {binary.name}: {error}"
+                ) from error
+            if actual != expected:
+                raise OSError(
+                    f"MAKO Renderer binary {binary.name} is built for "
+                    f"{actual or 'an unknown ISA'}, not {expected}"
+                )
 
     def _extract_and_install_files(self, archive_path: Path) -> None:
         """Install validated archive members at their managed destinations."""
@@ -687,6 +747,15 @@ class InstallationService(BaseService):
                         staged_files[self.vkbasalt_lib32_file][0]
                     )
                 self._validate_vkbasalt_binary_identity(*vkbasalt_binaries)
+                self._validate_payload_host_architecture(
+                    staged_files,
+                    (
+                        frame_generation_binaries[0],
+                        scaling_binaries[0],
+                        vkbasalt_binaries[0],
+                    ),
+                    has_32bit_library,
+                )
 
                 for destination, (temp_file, filename) in staged_files.items():
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -882,19 +951,26 @@ class InstallationService(BaseService):
         if not self._active_renderer_library_file().is_file():
             return False
 
+        architecture = self._renderer_host_architecture()
+        identities = host_layer_identities(architecture)
+        destination, library_destination, _mangohud, _mangohud32 = (
+            self._host_layer_destinations(architecture)
+        )
+        stale_removed = False
+        for foreign in self._foreign_host_layer_destinations(architecture):
+            if foreign.parent == destination.parent:
+                stale_removed = self._remove_if_exists(foreign) or stale_removed
         source = (
             HOST_SYSTEM_IMPLICIT_LAYER_DIR /
-            GAMESCOPE_WSI_MANIFEST_FILENAME_64
+            identities.gamescope_wsi_manifest_filename
         )
-        destination = self.gamescope_wsi_compatibility_manifest
-        library_destination = self.gamescope_wsi_compatibility_library
 
         try:
             manifest = json.loads(source.read_text(encoding="utf-8"))
             layer = manifest.get("layer")
             if not isinstance(layer, dict):
                 raise ValueError("missing layer object")
-            if layer.get("name") != GAMESCOPE_WSI_LAYER_NAME_64:
+            if layer.get("name") != identities.gamescope_wsi_layer_name:
                 raise ValueError("unexpected layer identity")
             if layer.get("type") != "GLOBAL":
                 raise ValueError("unexpected layer type")
@@ -921,7 +997,7 @@ class InstallationService(BaseService):
                 "Gamescope WSI compatibility remains unavailable: %s",
                 error,
             )
-            return False
+            return stale_removed
 
         try:
             library_updated = not (
@@ -945,7 +1021,7 @@ class InstallationService(BaseService):
             "Installed guarded Gamescope WSI compatibility payload at %s",
             destination,
         )
-        return library_updated or manifest_updated
+        return library_updated or manifest_updated or stale_removed
 
     def _stage_guarded_host_manifest(
             self,
@@ -1038,22 +1114,39 @@ class InstallationService(BaseService):
         """
         if not self._active_renderer_library_file().is_file():
             return False
+        architecture = self._renderer_host_architecture()
+        identities = host_layer_identities(architecture)
+        _wsi, _wsi_library, mangohud_manifest, mangohud_manifest32 = (
+            self._host_layer_destinations(architecture)
+        )
+        mangohud_changed = False
+        for foreign in self._foreign_host_layer_destinations(architecture):
+            if foreign.parent == mangohud_manifest.parent:
+                mangohud_changed = (
+                    self._remove_if_exists(foreign) or mangohud_changed
+                )
         mangohud_changed = self._stage_guarded_host_manifest(
-            (MANGOHUD_MANIFEST_FILENAME_64,),
-            self.mangohud_manifest,
-            MANGOHUD_LAYER_NAME_64,
+            (identities.mangohud_manifest_filename_64,),
+            mangohud_manifest,
+            identities.mangohud_layer_name_64,
             "64",
             {"MANGOHUD": "1"},
             {"DISABLE_MANGOHUD": "1"},
-        )
-        mangohud32_changed = self._stage_guarded_host_manifest(
-            (MANGOHUD_MANIFEST_FILENAME_32,),
-            self.mangohud_manifest32,
-            MANGOHUD_LAYER_NAME_32,
-            "32",
-            {"MANGOHUD": "1"},
-            {"DISABLE_MANGOHUD": "1"},
-        )
+        ) or mangohud_changed
+        mangohud32_changed = False
+        if (
+                mangohud_manifest32 is not None
+                and identities.mangohud_manifest_filename_32 is not None
+                and identities.mangohud_layer_name_32 is not None
+        ):
+            mangohud32_changed = self._stage_guarded_host_manifest(
+                (identities.mangohud_manifest_filename_32,),
+                mangohud_manifest32,
+                identities.mangohud_layer_name_32,
+                "32",
+                {"MANGOHUD": "1"},
+                {"DISABLE_MANGOHUD": "1"},
+            )
         vkbasalt_changed = False
         for library, manifest in (
             (self.vkbasalt_lib_file, self.vkbasalt_manifest),

@@ -327,10 +327,10 @@ class ConfigurationBoundaryTests(unittest.TestCase):
         ]
         content = "\n".join(lines) + "\n"
 
-        self.assertEqual(len(content.encode("utf-8")), 515)
+        self.assertEqual(len(content.encode("utf-8")), 524)
         self.assertEqual(
             _sha256(content),
-            "a938c81d4d0dbd6a549f1b771429c64fed8f7742f9ad5d3972b32d8e08a7f8ca",
+            "2dd5500dc72bb1414c1b0def3f44dbbd5bc4cc6f96da194d8174160c2626e01e",
         )
 
     def test_profile_sidecar_bytes_are_characterized(self):

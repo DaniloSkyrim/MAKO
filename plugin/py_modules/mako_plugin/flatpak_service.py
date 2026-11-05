@@ -186,8 +186,9 @@ class FlatpakService(BaseService):
     @staticmethod
     def _unsupported_host_error() -> str:
         return (
-            "MAKO Flatpak activation is disabled on native AArch64/Armada in "
-            "this release because the bundled runtime extensions are x86_64."
+            "MAKO Flatpak activation is unavailable on native AArch64 hosts, "
+            "including Armada and DroidDeck, because MAKO's Flatpak runtime "
+            "extensions are built for x86_64 only."
         )
 
     def _get_mako_paths(self) -> tuple[str, str]:

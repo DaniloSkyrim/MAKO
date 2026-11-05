@@ -23,6 +23,17 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def _elf(elf_class: int, machine: int) -> bytes:
+    """Minimal little-endian ELF identification plus e_type/e_machine."""
+    ident = b"\x7fELF" + bytes([elf_class, 1, 1]) + bytes(9)
+    return ident + (3).to_bytes(2, "little") + machine.to_bytes(2, "little")
+
+
+X86_64_ELF = _elf(2, 62)
+I386_ELF = _elf(1, 3)
+AARCH64_ELF = _elf(2, 183)
+
+
 class VkBasaltReleaseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.pin = {
@@ -61,11 +72,11 @@ class VkBasaltReleaseTests(unittest.TestCase):
         }) + "\n").encode("utf-8")
         members = {
             MODULE.SOURCE_PATHS["lib64"]: (
-                b"\x7fELF\x02vkBasalt_GetInstanceProcAddr "
+                X86_64_ELF + b"vkBasalt_GetInstanceProcAddr "
                 b"vkBasalt_GetDeviceProcAddr " + live_reload_markers
             ),
             MODULE.SOURCE_PATHS["lib32"]: (
-                b"\x7fELF\x01vkBasalt_GetInstanceProcAddr "
+                I386_ELF + b"vkBasalt_GetInstanceProcAddr "
                 b"vkBasalt_GetDeviceProcAddr " + live_reload_markers
             ),
             MODULE.SOURCE_PATHS["manifest64"]: manifest("64"),
@@ -84,7 +95,7 @@ class VkBasaltReleaseTests(unittest.TestCase):
             ).encode("utf-8"),
         }
         if shader_tool:
-            members["bin/mako-shader-tool"] = b"\x7fELF\x02shader-tool"
+            members["bin/mako-shader-tool"] = X86_64_ELF + b"shader-tool"
             members[MODULE.SOURCE_PATHS["lib64"]] += b" makoShader_"
             members[MODULE.SOURCE_PATHS["lib32"]] += b" makoShader_"
         members[MODULE.SOURCE_PATHS["checksums"]] = "".join(
@@ -101,6 +112,116 @@ class VkBasaltReleaseTests(unittest.TestCase):
             archive_path.read_bytes()
         ).hexdigest()
         return archive_path
+
+    def _aarch64_archive(
+            self, root: Path, *, machine: bytes = AARCH64_ELF,
+            architecture: str = "aarch64", commit: str | None = None,
+            tamper: bool = False) -> Path:
+        live_reload_markers = b" ".join(MODULE.LIVE_RELOAD_MARKERS)
+        library = (
+            machine + b"vkBasalt_GetInstanceProcAddr vkBasalt_GetDeviceProcAddr "
+            + live_reload_markers + b" makoSetSwapchainColorSpaceV1 makoShader_"
+        )
+        paths = MODULE.AARCH64_SOURCE_PATHS
+        members = {
+            paths["lib64"]: library,
+            paths["manifest64"]: (json.dumps({
+                "file_format_version": "1.2.1",
+                "layer": {
+                    "name": MODULE.LAYER_NAME,
+                    "type": "GLOBAL",
+                    "api_version": self.pin["vulkan_api_version"],
+                    "library_path": "../../../lib/libvkbasalt.so",
+                    "library_arch": "64",
+                    "enable_environment": MODULE.ENABLE_ENVIRONMENT,
+                    "disable_environment": MODULE.DISABLE_ENVIRONMENT,
+                },
+            }) + "\n").encode("utf-8"),
+            paths["license"]: b"zlib license\n",
+            paths["reshade_license"]: b"BSD license\n",
+            paths["source"]: (
+                "repository=https://github.com/eugeniosegala/vkBasalt\n"
+                f"tag={self.pin['tag']}\n"
+                f"commit={commit or self.pin['source_commit']}\n"
+                "upstream_repository=https://github.com/DadSchoorse/vkBasalt\n"
+                f"upstream_commit={self.pin['upstream_commit']}\n"
+                f"vulkan_headers_revision={self.pin['vulkan_headers_revision']}\n"
+                f"vulkan_headers_commit={self.pin['vulkan_headers_commit']}\n"
+                f"vulkan_api_version={self.pin['vulkan_api_version']}\n"
+                f"architecture={architecture}\n"
+                "build=source\n"
+            ).encode("utf-8"),
+            "bin/mako-shader-tool": machine + b"shader-tool",
+        }
+        members[paths["checksums"]] = "".join(
+            f"{hashlib.sha256(content).hexdigest()}  {path}\n"
+            for path, content in sorted(members.items())
+        ).encode("utf-8")
+        if tamper:
+            members[paths["lib64"]] += b" tampered"
+        archive_path = root / f"vkBasalt-{self.pin['tag']}-linux-aarch64.tar.xz"
+        with tarfile.open(archive_path, "w:xz") as archive:
+            for path, content in members.items():
+                info = tarfile.TarInfo(path)
+                info.size = len(content)
+                archive.addfile(info, io.BytesIO(content))
+        return archive_path
+
+    def test_aarch64_source_archive_stages_a_64_bit_only_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive = self._aarch64_archive(root)
+            pin, members = MODULE._validate_aarch64_source_archive(self.pin, archive)
+            self.assertEqual(pin["build_kind"], "source")
+            self.assertEqual(pin["host_architecture"], "aarch64")
+            self.assertIsNone(pin["url"])
+            self.assertEqual(pin["sha256"], MODULE._sha256(archive))
+            self.assertEqual(pin["source_commit"], self.pin["source_commit"])
+            target = root / "native"
+            MODULE._stage_native(pin, members, target, False)
+            staged = sorted(
+                path.relative_to(target).as_posix()
+                for path in target.rglob("*") if path.is_file()
+            )
+            self.assertFalse(any("32" in path or ".x86" in path for path in staged), staged)
+            self.assertTrue(any(path.endswith("libvkbasalt.so") for path in staged), staged)
+
+    def test_aarch64_source_archive_rejects_wrong_machine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = self._aarch64_archive(Path(temp_dir), machine=X86_64_ELF)
+            with self.assertRaisesRegex(ValueError, "not built for aarch64"):
+                MODULE._validate_aarch64_source_archive(self.pin, archive)
+
+    def test_aarch64_source_archive_rejects_unpinned_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = self._aarch64_archive(Path(temp_dir), commit="9" * 40)
+            with self.assertRaisesRegex(ValueError, "source provenance"):
+                MODULE._validate_aarch64_source_archive(self.pin, archive)
+
+    def test_aarch64_source_archive_requires_architecture_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = self._aarch64_archive(Path(temp_dir), architecture="x86_64")
+            with self.assertRaisesRegex(ValueError, "architecture=aarch64"):
+                MODULE._validate_aarch64_source_archive(self.pin, archive)
+
+    def test_aarch64_source_archive_rejects_internal_checksum_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = self._aarch64_archive(Path(temp_dir), tamper=True)
+            with self.assertRaisesRegex(ValueError, "internal checksum"):
+                MODULE._validate_aarch64_source_archive(self.pin, archive)
+
+    def test_x86_archive_rejects_aarch64_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive = self._archive(root)
+            members = MODULE._archive_members(archive)
+            with self.assertRaisesRegex(ValueError, "not built for x86_64"):
+                MODULE._validate_elf(
+                    "lib64",
+                    AARCH64_ELF + members[MODULE.SOURCE_PATHS["lib64"]][20:],
+                    2,
+                    "x86_64",
+                )
 
     def test_optional_shader_tool_is_verified_and_staged_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

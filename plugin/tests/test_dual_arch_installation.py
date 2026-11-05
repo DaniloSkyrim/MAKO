@@ -14,6 +14,24 @@ import unittest
 from unittest.mock import patch
 
 
+ELF_HEADER_SIZE = 20
+
+
+def _elf_header(elf_class: int, machine: int) -> bytes:
+    """Return the ELF identity bytes MAKO inspects before trusting a payload."""
+    header = bytearray(ELF_HEADER_SIZE)
+    header[:4] = b"ELF"
+    header[4] = elf_class
+    header[5] = 1
+    header[18:20] = machine.to_bytes(2, "little")
+    return bytes(header)
+
+
+X86_64_ELF = _elf_header(2, 62)
+I386_ELF = _elf_header(1, 3)
+AARCH64_ELF = _elf_header(2, 183)
+
+
 class _Logger:
     def __getattr__(self, _name):
         return lambda *_args, **_kwargs: None
@@ -151,6 +169,9 @@ class DualArchInstallationTests(unittest.TestCase):
         self.service.mako_launch_script_path = self.root / "bin/mako-run"
         self.service.diagnostics_script_path = self.root / "bin/mako-diagnostics"
         self.service.engine_state_file = self.root / "installed-engine.json"
+        self.service.renderer_host_architecture_file = (
+            self.root / "host-architecture"
+        )
         self.service.active_renderer_state_file = (
             self.root / "active-renderer.json"
         )
@@ -234,23 +255,24 @@ class DualArchInstallationTests(unittest.TestCase):
             },
         }).encode("utf-8")
 
-    def _archive(self, include_32bit: bool = True, include_sdr_helper: bool = False, include_shader_tool: bool = False) -> Path:
+    def _archive(self, include_32bit: bool = True, include_sdr_helper: bool = False, include_shader_tool: bool = False, host_architecture=None, native_elf=None) -> Path:
         archive_path = self.root / "engine.tar.xz"
+        native = X86_64_ELF if native_elf is None else native_elf
         members = {
             "bin/mako-vrr-lease": b"#!/usr/bin/env python3\n",
             f"lib/{LIB_FILENAME}": (
-                b"ELF64" + MAKO_LAYER_BUILD_MARKER + MAKO_PROFILE_FALLBACK_MARKER
+                native + b"ELF64" + MAKO_LAYER_BUILD_MARKER + MAKO_PROFILE_FALLBACK_MARKER
             ),
             f"share/vulkan/implicit_layer.d/{JSON_FILENAME}": self._manifest("64"),
             f"lib/{SPATIAL_SCALING_LIB_FILENAME}": (
-                b"ELF64" + SPATIAL_SCALING_LAYER_BUILD_MARKER
+                native + b"ELF64" + SPATIAL_SCALING_LAYER_BUILD_MARKER
                 + MAKO_PROFILE_FALLBACK_MARKER
             ),
             f"share/vulkan/implicit_layer.d/{SPATIAL_SCALING_JSON_FILENAME}": (
                 self._manifest("64", spatial_scaling=True)
             ),
             f"lib/vkbasalt/{VKBASALT_LIB_FILENAME}": (
-                b"ELF64 vkBasalt_GetInstanceProcAddr "
+                native + b"ELF64 vkBasalt_GetInstanceProcAddr "
                 b"vkBasalt_GetDeviceProcAddr"
             ),
             f"share/mako-render/vulkan/vkbasalt.d/{VKBASALT_MANIFEST_FILENAME_64}": (
@@ -270,6 +292,10 @@ class DualArchInstallationTests(unittest.TestCase):
                 }).encode("utf-8")
             ),
         }
+        if host_architecture is not None:
+            members["share/mako-render/host-architecture"] = (
+                f"{host_architecture}\n".encode("utf-8")
+            )
         members.update({
             f"share/mako-render/vkbasalt-shaders/{filename}": (
                 f"shader:{filename}".encode("utf-8")
@@ -279,19 +305,19 @@ class DualArchInstallationTests(unittest.TestCase):
         if include_32bit:
             members.update({
                 f"lib32/{LIB_FILENAME}": (
-                    b"ELF32" + MAKO_LAYER_BUILD_MARKER
+                    I386_ELF + b"ELF32" + MAKO_LAYER_BUILD_MARKER
                     + MAKO_PROFILE_FALLBACK_MARKER
                 ),
                 f"share/vulkan/implicit_layer.d/{JSON32_FILENAME}": self._manifest("32"),
                 f"lib32/{SPATIAL_SCALING_LIB_FILENAME}": (
-                    b"ELF32" + SPATIAL_SCALING_LAYER_BUILD_MARKER
+                    I386_ELF + b"ELF32" + SPATIAL_SCALING_LAYER_BUILD_MARKER
                     + MAKO_PROFILE_FALLBACK_MARKER
                 ),
                 f"share/vulkan/implicit_layer.d/{SPATIAL_SCALING_JSON32_FILENAME}": (
                     self._manifest("32", spatial_scaling=True)
                 ),
                 f"lib32/vkbasalt/{VKBASALT_LIB_FILENAME}": (
-                    b"ELF32 vkBasalt_GetInstanceProcAddr "
+                    I386_ELF + b"ELF32 vkBasalt_GetInstanceProcAddr "
                     b"vkBasalt_GetDeviceProcAddr"
                 ),
                 f"share/mako-render/vulkan/vkbasalt.d/{VKBASALT_MANIFEST_FILENAME_32}": (
@@ -428,13 +454,13 @@ class DualArchInstallationTests(unittest.TestCase):
         self.service._extract_and_install_files(self._archive())
         self.service._register_layer_manifests()
 
-        self.assertTrue(self.service.lib_file.read_bytes().startswith(b"ELF64"))
-        self.assertTrue(self.service.lib32_file.read_bytes().startswith(b"ELF32"))
+        self.assertTrue(self.service.lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64"))
+        self.assertTrue(self.service.lib32_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF32"))
         self.assertTrue(
-            self.service.spatial_scaling_lib_file.read_bytes().startswith(b"ELF64")
+            self.service.spatial_scaling_lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64")
         )
         self.assertTrue(
-            self.service.spatial_scaling_lib32_file.read_bytes().startswith(b"ELF32")
+            self.service.spatial_scaling_lib32_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF32")
         )
         manifest64 = json.loads(self.service.json_file.read_text(encoding="utf-8"))
         manifest32 = json.loads(self.service.json32_file.read_text(encoding="utf-8"))
@@ -487,10 +513,10 @@ class DualArchInstallationTests(unittest.TestCase):
             self.service.vkbasalt_manifest32.read_text(encoding="utf-8")
         )
         self.assertTrue(
-            self.service.vkbasalt_lib_file.read_bytes().startswith(b"ELF64")
+            self.service.vkbasalt_lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64")
         )
         self.assertTrue(
-            self.service.vkbasalt_lib32_file.read_bytes().startswith(b"ELF32")
+            self.service.vkbasalt_lib32_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF32")
         )
         self.assertEqual(
             vkbasalt_manifest64["layer"]["library_path"],
@@ -813,7 +839,7 @@ class DualArchInstallationTests(unittest.TestCase):
         self.service._extract_and_install_files(self._archive(include_32bit=False))
         self.service._register_layer_manifests()
 
-        self.assertTrue(self.service.lib_file.read_bytes().startswith(b"ELF64"))
+        self.assertTrue(self.service.lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64"))
         self.assertTrue(self.service.json_file.exists())
         self.assertTrue(self.service.registered_json_file.exists())
         self.assertFalse(self.service.lib32_file.exists())
@@ -986,6 +1012,241 @@ class DualArchInstallationTests(unittest.TestCase):
         self.assertEqual(environment.native_architecture, "aarch64")
         self.assertTrue(environment.translated)
         self.assertFalse(environment.armada)
+
+    def test_droiddeck_marker_identifies_aarch64_when_decky_runs_through_fex(self):
+        droiddeck = self.root / "usr/local/bin/droiddeck-session"
+        droiddeck.parent.mkdir(parents=True)
+        droiddeck.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        environment = host_environment_module.detect_host_environment(
+            process_machine="x86_64",
+            armada_marker=self.root / "missing-device-env",
+            droiddeck_marker=droiddeck,
+            native_process=self.root / "missing-init",
+        )
+
+        self.assertEqual(environment.native_architecture, "aarch64")
+        self.assertTrue(environment.translated)
+        self.assertTrue(environment.droiddeck)
+        self.assertFalse(environment.armada)
+
+    def test_native_ancestor_identifies_aarch64_when_pid_one_is_hidden(self):
+        # proot and containers often hide PID 1, while FEX's native launcher
+        # remains an ordinary AArch64 ancestor of the translated Decky.
+        proc_root = self.root / "proc"
+        own = proc_root / str(os.getpid())
+        own.mkdir(parents=True)
+        (own / "status").write_text("Name:\tpython\nPPid:\t4242\n", encoding="utf-8")
+        launcher = proc_root / "4242"
+        launcher.mkdir()
+        (launcher / "status").write_text("Name:\tFEX\nPPid:\t0\n", encoding="utf-8")
+        (launcher / "exe").write_bytes(AARCH64_ELF)
+
+        environment = host_environment_module.detect_host_environment(
+            process_machine="x86_64",
+            armada_marker=self.root / "missing-device-env",
+            droiddeck_marker=self.root / "missing-droiddeck-session",
+            proc_root=proc_root,
+        )
+
+        self.assertEqual(environment.process_architecture, "x86_64")
+        self.assertEqual(environment.native_architecture, "aarch64")
+        self.assertFalse(environment.droiddeck)
+
+    def test_x86_ancestors_keep_an_x86_host(self):
+        proc_root = self.root / "proc"
+        (proc_root / "1").mkdir(parents=True)
+        (proc_root / "1" / "exe").write_bytes(X86_64_ELF)
+        own = proc_root / str(os.getpid())
+        own.mkdir()
+        (own / "status").write_text("PPid:\t1\n", encoding="utf-8")
+
+        environment = host_environment_module.detect_host_environment(
+            process_machine="x86_64",
+            armada_marker=self.root / "missing-device-env",
+            droiddeck_marker=self.root / "missing-droiddeck-session",
+            proc_root=proc_root,
+        )
+
+        self.assertEqual(environment.native_architecture, "x86_64")
+        self.assertFalse(environment.translated)
+
+    def test_aarch64_package_is_supported_on_aarch64_but_not_armada(self):
+        metadata = {"host_architectures": ["aarch64"]}
+        with patch.object(
+            self.service,
+            "_detect_native_host_architecture",
+            return_value="aarch64",
+        ):
+            with patch.object(
+                installation_module,
+                "ARMADA_DEVICE_ENV",
+                self.root / "missing-device-env",
+            ):
+                self.assertEqual(
+                    self.service._host_compatibility(metadata),
+                    ("aarch64", True, None),
+                )
+            armada_marker = self.root / "device-env"
+            armada_marker.write_text("", encoding="utf-8")
+            with patch.object(installation_module, "ARMADA_DEVICE_ENV", armada_marker):
+                _host, supported, error = self.service._host_compatibility(metadata)
+        self.assertFalse(supported)
+        self.assertIn("disabled on Armada", error)
+
+    def test_aarch64_package_names_the_right_package_on_x86_hosts(self):
+        with patch.object(
+            self.service,
+            "_detect_native_host_architecture",
+            return_value="x86_64",
+        ):
+            _host, supported, error = self.service._host_compatibility(
+                {"host_architectures": ["aarch64"]}
+            )
+        self.assertFalse(supported)
+        self.assertIn("Install the MAKO Decky package built for x86_64", error)
+
+    def test_package_metadata_declares_one_native_isa(self):
+        base = {
+            "name": "renderer.tar.xz",
+            "version": "1.0.0",
+            "sha256hash": "a" * 64,
+        }
+        for binary, message in (
+            ({**base, "host_architectures": ["x86_64", "aarch64"]},
+             "exactly one supported native host"),
+            ({**base, "host_architectures": ["riscv64"]},
+             "exactly one supported native host"),
+            ({**base, "architectures": ["64", "32"],
+              "host_architectures": ["aarch64"]},
+             "64-bit only for aarch64"),
+        ):
+            with self.subTest(binary=binary):
+                (self.root / "package.json").write_text(
+                    json.dumps({"bundled_renderer": binary}), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(OSError, message):
+                    self.service._bundled_archive_metadata(self.root)
+
+    def test_aarch64_payload_installs_with_its_record(self):
+        archive = self._archive(
+            include_32bit=False,
+            host_architecture="aarch64",
+            native_elf=AARCH64_ELF,
+        )
+        with patch.object(
+            self.service, "_renderer_host_architecture", return_value="aarch64"
+        ):
+            self.service._extract_and_install_files(archive)
+
+        self.assertEqual(
+            self.service.renderer_host_architecture_file.read_text(encoding="utf-8"),
+            "aarch64\n",
+        )
+        self.assertEqual(self.service.lib_file.read_bytes()[:ELF_HEADER_SIZE], AARCH64_ELF)
+        self.assertFalse(self.service.lib32_file.exists())
+
+    def test_payload_isa_must_match_its_package(self):
+        for host_architecture, native_elf, include_32bit, message in (
+            # A mislabeled archive must never expose foreign code.
+            ("aarch64", X86_64_ELF, False, "built for x86_64, not aarch64"),
+            ("x86_64", X86_64_ELF, False, "records host architecture 'x86_64'"),
+            (None, AARCH64_ELF, False, "missing its host architecture record"),
+            ("aarch64", AARCH64_ELF, True, "must not contain 32-bit layers"),
+        ):
+            with self.subTest(record=host_architecture, include_32bit=include_32bit):
+                archive = self._archive(
+                    include_32bit=include_32bit,
+                    host_architecture=host_architecture,
+                    native_elf=native_elf,
+                )
+                with (
+                    patch.object(
+                        self.service,
+                        "_renderer_host_architecture",
+                        return_value="aarch64",
+                    ),
+                    self.assertRaisesRegex(OSError, message),
+                ):
+                    self.service._extract_and_install_files(archive)
+                self.assertFalse(self.service.lib_file.exists())
+
+    def test_x86_payload_rejects_aarch64_binaries(self):
+        archive = self._archive(native_elf=AARCH64_ELF)
+        with self.assertRaisesRegex(OSError, "built for aarch64, not x86_64"):
+            self.service._extract_and_install_files(archive)
+
+    def test_aarch64_renderer_stages_native_host_layers_only(self):
+        self.service.lib_file.parent.mkdir(parents=True)
+        self.service.lib_file.write_bytes(b"installed")
+        system_dir = self.root / "system-implicit"
+        system_dir.mkdir()
+        library = self.root / "libVkLayer_FROG_gamescope_wsi_aarch64.so"
+        library.write_bytes(b"wsi-arm")
+        (system_dir / "VkLayer_FROG_gamescope_wsi.aarch64.json").write_text(json.dumps({
+            "file_format_version": "1.0.0",
+            "layer": {
+                "name": "VK_LAYER_FROG_gamescope_wsi_aarch64",
+                "type": "GLOBAL",
+                "library_path": str(library),
+                "enable_environment": {GAMESCOPE_WSI_ENABLE_ENV: "1"},
+                "disable_environment": {GAMESCOPE_WSI_DISABLE_ENV: "1"},
+            },
+        }), encoding="utf-8")
+        (system_dir / "MangoHud.aarch64.json").write_text(json.dumps({
+            "file_format_version": "1.0.0",
+            "layer": {
+                "name": "VK_LAYER_MANGOHUD_overlay_aarch64",
+                "type": "GLOBAL",
+                "library_path": "libMangoHud.so",
+                "enable_environment": {"MANGOHUD": "1"},
+                "disable_environment": {"DISABLE_MANGOHUD": "1"},
+            },
+        }), encoding="utf-8")
+        # Copies left by an x86_64 package are not valid for this host.
+        for stale in (
+            self.service.gamescope_wsi_compatibility_manifest,
+            self.service.gamescope_wsi_compatibility_library,
+            self.service.mangohud_manifest,
+            self.service.mangohud_manifest32,
+        ):
+            stale.parent.mkdir(parents=True, exist_ok=True)
+            stale.write_text("stale", encoding="utf-8")
+
+        with (
+            patch.object(installation_module, "HOST_SYSTEM_IMPLICIT_LAYER_DIR", system_dir),
+            patch.object(
+                self.service, "_renderer_host_architecture", return_value="aarch64"
+            ),
+        ):
+            self.assertTrue(
+                self.service.migrate_gamescope_wsi_compatibility_manifest_if_needed()
+            )
+            self.assertTrue(
+                self.service.refresh_guarded_postprocess_manifests_if_needed()
+            )
+            self.assertFalse(
+                self.service.refresh_guarded_postprocess_manifests_if_needed()
+            )
+
+        self.assertEqual(
+            sorted(path.name for path in self.service.gamescope_wsi_compatibility_dir.iterdir()),
+            [
+                "VkLayer_FROG_gamescope_wsi.aarch64.json",
+                "libVkLayer_FROG_gamescope_wsi_aarch64.so",
+            ],
+        )
+        self.assertEqual(
+            [path.name for path in self.service.mangohud_layer_dir.iterdir()],
+            ["MangoHud.aarch64.json"],
+        )
+        staged = json.loads(
+            (self.service.mangohud_layer_dir / "MangoHud.aarch64.json").read_text(
+                encoding="utf-8"
+            )
+        )["layer"]
+        self.assertEqual(staged["name"], "VK_LAYER_MANGOHUD_overlay_aarch64")
+        self.assertEqual(staged["library_arch"], "64")
 
     def test_armada_host_rejects_x86_only_renderer_before_installation(self):
         with patch.object(
@@ -1267,8 +1528,8 @@ class DualArchInstallationTests(unittest.TestCase):
 
         self.service._extract_and_install_files(self._archive())
 
-        self.assertTrue(self.service.lib_file.read_bytes().startswith(b"ELF64"))
-        self.assertTrue(self.service.lib32_file.read_bytes().startswith(b"ELF32"))
+        self.assertTrue(self.service.lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64"))
+        self.assertTrue(self.service.lib32_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF32"))
         self.assertEqual(self.service.lib_file.stat().st_mode & 0o777, 0o644)
         self.assertEqual(self.service.lib32_file.stat().st_mode & 0o777, 0o644)
 
@@ -1281,7 +1542,7 @@ class DualArchInstallationTests(unittest.TestCase):
         self.service._extract_and_install_files(self._archive())
 
         self.assertFalse(self.service.lib_file.is_symlink())
-        self.assertTrue(self.service.lib_file.read_bytes().startswith(b"ELF64"))
+        self.assertTrue(self.service.lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64"))
         self.assertEqual(unrelated_file.read_bytes(), b"leave-this-alone")
 
     def test_fresh_install_does_not_require_chmod(self):
@@ -1294,7 +1555,7 @@ class DualArchInstallationTests(unittest.TestCase):
             self.service._register_layer_manifests()
 
         chmod.assert_not_called()
-        self.assertTrue(self.service.lib_file.read_bytes().startswith(b"ELF64"))
+        self.assertTrue(self.service.lib_file.read_bytes()[ELF_HEADER_SIZE:].startswith(b"ELF64"))
         self.assertTrue(self.service.registered_json_file.exists())
 
     def test_atomic_copy_failure_preserves_existing_file(self):

@@ -19,15 +19,16 @@ from .config_schema_generated import (
 )
 from .constants import (
     COMPETING_LSFG_DISABLE_ENVS,
+    DROIDDECK_SESSION_MARKER,
     DXVK_HDR_ENV,
     EXTERNAL_VULKAN_LAYER_ENV,
     EXTERNAL_VULKAN_LAYER_MANGOHUD,
     EXTERNAL_VULKAN_LAYER_VKBASALT,
     GAMESCOPE_WSI_DISABLE_ENV,
     GAMESCOPE_WSI_ENABLE_ENV,
-    GAMESCOPE_WSI_LAYER_NAME_64,
     GAMESCOPE_WAYLAND_DISPLAY_ENV,
     HDR_EXPOSURE_DISABLE_ENV,
+    LEGACY_RENDERER_HOST_ARCHITECTURE,
     MAKO_CONFIG_ENV,
     MAKO_LAYER_DISABLE_ENV,
     MAKO_LAYER_ENABLE_ENV,
@@ -38,7 +39,6 @@ from .constants import (
     MAKO_SPLIT_LAYER_CHAIN_ENV,
     MANGOHUD_CONFIG_FILENAME,
     MANGOHUD_CONFIG_FILE_ENV,
-    MANGOHUD_LAYER_NAME_64,
     PRESENT_ACQUIRE_TIMEOUT_ENV,
     PRESENT_ACQUIRE_TIMEOUT_MS,
     PRESENT_DIAGNOSTICS_ENV,
@@ -49,6 +49,7 @@ from .constants import (
     SPATIAL_SCALING_LAYER_ENABLE_ENV,
     SPATIAL_SCALING_LAYER_NAME,
     STEAM_APP_ID_ENV_KEYS,
+    STEAM_OVERLAY_LAYER_NAME_64,
     VK_ADD_IMPLICIT_LAYER_PATH_ENV,
     VK_IMPLICIT_LAYER_PATH_ENV,
     VK_INSTANCE_LAYERS_ENV,
@@ -58,6 +59,7 @@ from .constants import (
     VKBASALT_LAYER_ENABLE_ENV,
     VKBASALT_LAYER_NAME_64,
     WAYLAND_DISPLAY_ENV,
+    host_layer_identities,
 )
 from .profile_storage import (
     ProfileMetadata,
@@ -70,9 +72,25 @@ from .profile_storage import (
 from .process_detection import is_matchable_process_name
 
 
-WRAPPER_FORMAT_VERSION = 79
+WRAPPER_FORMAT_VERSION = 80
 WRAPPER_FORMAT_MARKER = f"# mako-wrapper-format: {WRAPPER_FORMAT_VERSION}"
-HOST_COMPATIBILITY_MARKER = "# mako-host-compatibility: aarch64-passthrough-v1"
+
+
+def host_compatibility_marker(renderer_architecture: str) -> str:
+    """Name the guard and the Renderer ISA it admits.
+
+    Embedding the ISA makes a wrapper generated for another package stale, so
+    switching between x86_64 and AArch64 packages always regenerates it.
+    """
+    return (
+        "# mako-host-compatibility: renderer-architecture-v2 "
+        f"{renderer_architecture}"
+    )
+
+
+HOST_COMPATIBILITY_MARKER = host_compatibility_marker(
+    LEGACY_RENDERER_HOST_ARCHITECTURE
+)
 DIAGNOSTICS_DEFAULT_MARKER = (
     "# development presentation diagnostics default: disabled"
 )
@@ -198,11 +216,15 @@ class WrapperGenerationContext:
     gamescope_wsi_manifest_filename_64: str
     spatial_scaling_manifest_filename_64: str
     mangohud_manifest_filename_64: str
-    mangohud_manifest_filename_32: str
+    mangohud_manifest_filename_32: Optional[str]
     vkbasalt_manifest_filename_64: str
     vkbasalt_manifest_filename_32: str
     armada_device_env: Path
     armada_game_launch: Path
+    # Native ISA of the installed Renderer; it selects the per-architecture
+    # Gamescope WSI, MangoHud, and Steam overlay identities.
+    renderer_architecture: str = LEGACY_RENDERER_HOST_ARCHITECTURE
+    droiddeck_session_marker: Path = DROIDDECK_SESSION_MARKER
 
 
 def has_active_in(config: ConfigurationData) -> bool:
@@ -329,27 +351,60 @@ def unsupported_host_passthrough_lines(
 def host_compatibility_guard_lines(
         armada_device_env: Path,
         armada_game_launch: Path,
-        compatibility_marker: str = HOST_COMPATIBILITY_MARKER,
+        compatibility_marker: Optional[str] = None,
         passthrough_lines: Optional[list[str]] = None,
+        renderer_architecture: str = LEGACY_RENDERER_HOST_ARCHITECTURE,
+        droiddeck_session_marker: Path = DROIDDECK_SESSION_MARKER,
 ) -> list[str]:
-    """Bypass MAKO before any exports on unsupported AArch64 hosts."""
+    """Bypass MAKO before any exports unless the host runs this Renderer's ISA.
+
+    ``uname`` describes the shell's process, which FEX reports as x86_64.
+    Armada's device marker and DroidDeck's session helper identify their
+    native AArch64 host independently of that translation. Armada remains
+    fail-closed until its armada-game-launch path has hardware evidence.
+    """
+    host_layer_identities(renderer_architecture)
     device_env = armada_device_env.as_posix()
-    return [
-        compatibility_marker,
+    droiddeck = droiddeck_session_marker.as_posix()
+    passthrough = (
+        passthrough_lines
+        if passthrough_lines is not None
+        else unsupported_host_passthrough_lines(
+            armada_device_env,
+            armada_game_launch,
+            "    ",
+        )
+    )
+    lines = [
+        compatibility_marker
+        if compatibility_marker is not None
+        else host_compatibility_marker(renderer_architecture),
+        f"mako_renderer_arch={renderer_architecture}",
         'mako_native_arch="$(uname -m 2>/dev/null || true)"',
-        f'if [ -f "{device_env}" ] || [ "$mako_native_arch" = "aarch64" ] || [ "$mako_native_arch" = "arm64" ]; then',
-        "    # This release has no validated native AArch64 Renderer.",
-        *(
-            passthrough_lines
-            if passthrough_lines is not None
-            else unsupported_host_passthrough_lines(
-                armada_device_env,
-                armada_game_launch,
-                "    ",
-            )
-        ),
+        'case "$mako_native_arch" in',
+        "    arm64) mako_native_arch=aarch64 ;;",
+        "    amd64) mako_native_arch=x86_64 ;;",
+        "esac",
+        f'if [ -f "{device_env}" ] || [ -f "{droiddeck}" ]; then',
+        "    mako_native_arch=aarch64",
+        "fi",
+        f'if [ -f "{device_env}" ] || [ "$mako_native_arch" != "$mako_renderer_arch" ]; then',
+        "    # Never expose a Renderer built for another native ISA, and keep",
+        "    # Armada on its own launcher until that path is validated.",
+        *passthrough,
         "fi",
     ]
+    if renderer_architecture != "x86_64":
+        # MAKO's Flatpak runtime extensions are built for x86_64 only.
+        lines.extend([
+            'if [ "${1##*/}" = flatpak ] && [ "${2:-}" = run ]; then',
+            "    printf '%s\\n' 'MAKO Decky: Flatpak launches are unsupported "
+            f"by the {renderer_architecture} Renderer; continuing without MAKO.' >&2",
+            *passthrough,
+            "fi",
+        ])
+    lines.append("unset mako_native_arch mako_renderer_arch")
+    return lines
 
 
 def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
@@ -380,6 +435,9 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
             "            mako_diagnostics_rotation_ready=0",
             "        fi",
         ])
+    identities = host_layer_identities(context.renderer_architecture)
+    gamescope_wsi_layer_name = identities.gamescope_wsi_layer_name
+    mangohud_layer_name = identities.mangohud_layer_name_64
     gamescope_wsi_manifest = shlex.quote(str(
         context.gamescope_wsi_compatibility_dir /
         context.gamescope_wsi_manifest_filename_64
@@ -397,9 +455,14 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
     mangohud_manifest = shlex.quote(str(
         context.mangohud_layer_dir / context.mangohud_manifest_filename_64
     ))
-    mangohud_manifest32 = shlex.quote(str(
-        context.mangohud_layer_dir / context.mangohud_manifest_filename_32
-    ))
+    mangohud_manifest_readable = f"[ -r {mangohud_manifest} ]"
+    if context.mangohud_manifest_filename_32 is not None:
+        mangohud_manifest32 = shlex.quote(str(
+            context.mangohud_layer_dir / context.mangohud_manifest_filename_32
+        ))
+        mangohud_manifest_readable = (
+            f"{{ {mangohud_manifest_readable} || [ -r {mangohud_manifest32} ]; }}"
+        )
     mangohud_layer_dir = shlex.quote(str(context.mangohud_layer_dir))
     vkbasalt_manifest = shlex.quote(str(
         context.vkbasalt_layer_dir / context.vkbasalt_manifest_filename_64
@@ -408,18 +471,59 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         context.vkbasalt_layer_dir / context.vkbasalt_manifest_filename_32
     ))
     vkbasalt_layer_dir = shlex.quote(str(context.vkbasalt_layer_dir))
-    steam_overlay_manifest64 = shlex.quote(str(
-        context.user_vulkan_layer_dir / "steamoverlay_x86_64.json"
-    ))
-    steam_overlay_manifest32 = shlex.quote(str(
-        context.user_vulkan_layer_dir / "steamoverlay_i386.json"
-    ))
     user_vulkan_layer_dir = shlex.quote(str(context.user_vulkan_layer_dir))
+    steam_overlay_gate = (
+        'if [ "${mako_disable_steam_overlay:-1}" != 1 ] && '
+        f'[ "${{ENABLE_VK_LAYER_VALVE_steam_overlay_1:-0}}" = 1 ] && '
+        '[ "$mako_gamescope_wsi_session" != 1 ] && '
+        '[ "$mako_flatpak_runtime" != 1 ]'
+    )
+    if identities.steam_overlay_manifest_filenames:
+        steam_overlay_manifest64 = shlex.quote(str(
+            context.user_vulkan_layer_dir /
+            identities.steam_overlay_manifest_filenames[0]
+        ))
+        steam_overlay_manifest32 = shlex.quote(str(
+            context.user_vulkan_layer_dir /
+            identities.steam_overlay_manifest_filenames[1]
+        ))
+        steam_overlay_discovery_lines = [
+            f"{steam_overlay_gate} && "
+            f'{{ [ -r {steam_overlay_manifest64} ] || '
+            f'[ -r {steam_overlay_manifest32} ]; }}; then',
+            f"    if [ -r {steam_overlay_manifest64} ]; then",
+            "        mako_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64",
+            "    fi",
+            f"    if [ -r {steam_overlay_manifest32} ]; then",
+            '        mako_steam_overlay_layers="${mako_steam_overlay_layers:+$mako_steam_overlay_layers:}VK_LAYER_VALVE_steam_overlay_32"',
+            "    fi",
+        ]
+    else:
+        # The ARM Steam client's manifest name is not a stable contract.
+        # Admit only a readable non-x86 manifest declaring the 64-bit layer.
+        steam_overlay_discovery_lines = [
+            f"{steam_overlay_gate}; then",
+            f"    for mako_steam_overlay_manifest in {user_vulkan_layer_dir}/*.json; do",
+            '        case "${mako_steam_overlay_manifest##*/}" in',
+            "            steamoverlay_x86_64.json|steamoverlay_i386.json) continue ;;",
+            "        esac",
+            '        if [ -f "$mako_steam_overlay_manifest" ] && '
+            '[ -r "$mako_steam_overlay_manifest" ] && '
+            f"grep -q '\"{STEAM_OVERLAY_LAYER_NAME_64}\"' "
+            '"$mako_steam_overlay_manifest" 2>/dev/null; then',
+            f"            mako_steam_overlay_layers={STEAM_OVERLAY_LAYER_NAME_64}",
+            "            break",
+            "        fi",
+            "    done",
+            "    unset mako_steam_overlay_manifest",
+            "fi",
+            'if [ -n "$mako_steam_overlay_layers" ]; then',
+        ]
     inherited_managed_layer_removal_lines: list[str] = []
     for layer_name in (
         MAKO_LAYER_NAME,
         SPATIAL_SCALING_LAYER_NAME,
-        GAMESCOPE_WSI_LAYER_NAME_64,
+        gamescope_wsi_layer_name,
         VKBASALT_LAYER_NAME_64,
     ):
         inherited_managed_layer_removal_lines.extend((
@@ -528,7 +632,7 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         f"    export {GAMESCOPE_WSI_ENABLE_ENV}=1",
         "    export NODEVICE_SELECT=1",
         "    export DISABLE_LAYER_MESA_ANTI_LAG=1",
-        f"    mako_managed_instance_layers={MAKO_LAYER_NAME}:{GAMESCOPE_WSI_LAYER_NAME_64}",
+        f"    mako_managed_instance_layers={MAKO_LAYER_NAME}:{gamescope_wsi_layer_name}",
         '    mako_implicit_layer_path="$mako_implicit_layer_path:$mako_gamescope_wsi_layer_dir"',
         '    if [ "${mako_spatial_scaling_required:-0}" = 1 ]; then',
         f"        unset {SPATIAL_SCALING_LAYER_DISABLE_ENV}",
@@ -546,7 +650,7 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         'case "$mako_external_vulkan_layer" in',
         f"        {EXTERNAL_VULKAN_LAYER_MANGOHUD})",
         '            if [ "$mako_flatpak_runtime" != 1 ] && '
-        f"{{ [ -r {mangohud_manifest} ] || [ -r {mangohud_manifest32} ]; }}; then",
+        f"{mangohud_manifest_readable}; then",
         "                unset DISABLE_MANGOHUD",
         "                export MANGOHUD=1",
         # This opt-in file wins over inherited configuration (including Steam's
@@ -559,7 +663,7 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         "                export DISABLE_LAYER_MESA_ANTI_LAG=1",
         '                mako_implicit_layer_path="$mako_implicit_layer_path:$mako_mangohud_layer_dir"',
         f"                if [ -r {mangohud_manifest} ]; then",
-        f"                    mako_managed_external_layer={MANGOHUD_LAYER_NAME_64}",
+        f"                    mako_managed_external_layer={mangohud_layer_name}",
         "                fi",
         "            fi",
         "            ;;",
@@ -594,18 +698,7 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         # expose it as an explicit-layer source after MAKO. This keeps
         # Steam's FPS counter without admitting Fossilize or arbitrary implicit
         # layers. Gaming Mode retains its compositor-owned performance path.
-        'if [ "${mako_disable_steam_overlay:-1}" != 1 ] && '
-        f'[ "${{ENABLE_VK_LAYER_VALVE_steam_overlay_1:-0}}" = 1 ] && '
-        '[ "$mako_gamescope_wsi_session" != 1 ] && '
-        '[ "$mako_flatpak_runtime" != 1 ] && '
-        f'{{ [ -r {steam_overlay_manifest64} ] || '
-        f'[ -r {steam_overlay_manifest32} ]; }}; then',
-        f"    if [ -r {steam_overlay_manifest64} ]; then",
-        "        mako_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64",
-        "    fi",
-        f"    if [ -r {steam_overlay_manifest32} ]; then",
-        '        mako_steam_overlay_layers="${mako_steam_overlay_layers:+$mako_steam_overlay_layers:}VK_LAYER_VALVE_steam_overlay_32"',
-        "    fi",
+        *steam_overlay_discovery_lines,
         f"    mako_steam_overlay_layer_dir={user_vulkan_layer_dir}",
         '    export VK_LAYER_PATH="$mako_steam_overlay_layer_dir${VK_LAYER_PATH:+:$VK_LAYER_PATH}"',
         "    for mako_steam_overlay_layer in VK_LAYER_VALVE_steam_overlay_64 VK_LAYER_VALVE_steam_overlay_32; do",
@@ -639,7 +732,7 @@ def layer_environment_lines(context: WrapperGenerationContext) -> list[str]:
         f"    unset {GAMESCOPE_WSI_ENABLE_ENV}",
         f"    unset {SPATIAL_SCALING_LAYER_ENABLE_ENV}",
         '    if [ "$mako_managed_external_layer" = "'
-        f'{MANGOHUD_LAYER_NAME_64}" ]; then',
+        f'{mangohud_layer_name}" ]; then',
         "        unset MANGOHUD",
         '    elif [ "$mako_managed_external_layer" = "'
         f'{VKBASALT_LAYER_NAME_64}" ]; then',
@@ -1009,6 +1102,8 @@ def generate_script_content(
             context.armada_device_env,
             context.armada_game_launch,
             context.host_compatibility_marker,
+            renderer_architecture=context.renderer_architecture,
+            droiddeck_session_marker=context.droiddeck_session_marker,
         ),
         [
             *script_configuration_lines(config),
@@ -1053,6 +1148,8 @@ def generate_profile_script_content(
             context.armada_device_env,
             context.armada_game_launch,
             context.host_compatibility_marker,
+            renderer_architecture=context.renderer_architecture,
+            droiddeck_session_marker=context.droiddeck_session_marker,
         ),
         wrapper_profile_configuration_lines(
             profile_data,

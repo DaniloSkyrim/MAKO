@@ -32,6 +32,7 @@ local_release_version=""
 local_package_source_commit=""
 local_package_worktree_dirty=false
 established_decky_identity="MAKO - Frame Generation"
+host_arch=""
 
 usage() {
   cat <<'EOF'
@@ -56,6 +57,10 @@ Options:
                           never for a release package.
   --64-bit-only           With --local-engine-repo, build and bundle only the
                           64-bit host layer. Intended only for fast local tests.
+  --host-arch ARCH        With --local-engine-repo, package for x86_64 or
+                          aarch64 (default: this machine). AArch64 packages are
+                          always native-only and 64-bit only: Flatpak runtime
+                          extensions are x86_64-only and fail closed on ARM.
   -h, --help              Show this help.
 EOF
 }
@@ -122,6 +127,15 @@ while (($#)); do
       shift
       continue
       ;;
+    --host-arch)
+      if (($# < 2)); then
+        echo "--host-arch requires x86_64 or aarch64" >&2
+        exit 2
+      fi
+      host_arch="$2"
+      shift 2
+      continue
+      ;;
     --help|-h)
       usage
       exit 0
@@ -160,6 +174,37 @@ fi
 if [[ "$build_64_only" == true && -z "$local_engine_repo" ]]; then
   echo "--64-bit-only requires --local-engine-repo" >&2
   exit 2
+fi
+if [[ -n "$host_arch" && -z "$local_engine_repo" ]]; then
+  echo "--host-arch requires --local-engine-repo" >&2
+  exit 2
+fi
+if [[ -z "$host_arch" && -z "$local_engine_repo" ]]; then
+  # Pinned and wrapper-only packages bundle the published x86_64 Renderer.
+  host_arch=x86_64
+elif [[ -z "$host_arch" ]]; then
+  case "$(uname -m)" in
+    aarch64|arm64) host_arch=aarch64 ;;
+    *) host_arch=x86_64 ;;
+  esac
+fi
+case "$host_arch" in
+  x86_64|amd64) host_arch=x86_64 ;;
+  aarch64|arm64) host_arch=aarch64 ;;
+  *)
+    echo "--host-arch must be x86_64 or aarch64" >&2
+    exit 2
+    ;;
+esac
+if [[ "$host_arch" == aarch64 ]]; then
+  # Published releases contain only the x86_64 Renderer. An AArch64 Decky ZIP
+  # therefore always bundles a Renderer compiled from this checkout.
+  if [[ -z "$local_engine_repo" ]]; then
+    echo "AArch64 Decky packages require --local-engine-repo; no published AArch64 Renderer exists." >&2
+    exit 2
+  fi
+  build_64_only=true
+  native_only=true
 fi
 
 for command in curl node python3 strings tar zip unzip; do
@@ -326,12 +371,16 @@ if [[ -n "$local_engine_repo" ]]; then
   if [[ "$native_only" == true ]]; then
     local_plugin_label="$local_plugin_label.native-only"
   fi
-  if [[ "$build_64_only" == true ]]; then
+  if [[ "$host_arch" == aarch64 ]]; then
+    local_plugin_label="$local_plugin_label.aarch64"
+  elif [[ "$build_64_only" == true ]]; then
     local_plugin_label="$local_plugin_label.x86_64"
   fi
 
   engine_archive_suffix="linux"
-  if [[ "$build_64_only" == true ]]; then
+  if [[ "$host_arch" == aarch64 ]]; then
+    engine_archive_suffix="linux-aarch64"
+  elif [[ "$build_64_only" == true ]]; then
     engine_archive_suffix="linux.x86_64"
   fi
   engine_archive_path="$local_engine_repo/out/MAKO-Renderer-v$archive_version-local.$local_engine_label-$engine_archive_suffix.tar.xz"
@@ -341,7 +390,7 @@ if [[ -n "$local_engine_repo" ]]; then
     echo "Reusing matching local engine archive $archive_name..."
   else
     echo "Building local engine checkout $local_engine_label..."
-    engine_package_args=()
+    engine_package_args=(--host-arch "$host_arch")
     if [[ "$build_64_only" == true ]]; then
       engine_package_args+=(--64-bit-only)
     fi
@@ -471,6 +520,13 @@ if ! tar -tf "$package_dir/bin/$archive_name" |
     grep -Fx "./bin/mako-vrr-lease" >/dev/null; then
   echo "Engine archive is missing ./bin/mako-vrr-lease" >&2
   exit 1
+fi
+if [[ "$local_engine_mode" == true ]]; then
+  archive_host_arch="$(tar -xJOf "$package_dir/bin/$archive_name" ./share/mako-render/host-architecture | tr -d '[:space:]')"
+  if [[ "$archive_host_arch" != "$host_arch" ]]; then
+    echo "Engine archive is built for '$archive_host_arch', not $host_arch" >&2
+    exit 1
+  fi
 fi
 if [[ "$build_64_only" != true ]]; then
   manifest_paths+=(
@@ -608,7 +664,7 @@ if [[ "$local_engine_mode" == true ]]; then
     const [archiveName, engineVersion, archiveChecksum, sourceCommit,
       sourceDirty, sourceLabel, flatpakName, flatpakChecksum,
       localPluginLabel, build64Only, localReleaseVersion,
-      packageSourceCommit, packageWorktreeDirty] = process.argv.slice(2);
+      packageSourceCommit, packageWorktreeDirty, hostArch] = process.argv.slice(2);
     const localLabel = sourceLabel;
     binary.name = archiveName;
     binary.version = `${engineVersion}-local.${localLabel}`;
@@ -617,7 +673,7 @@ if [[ "$local_engine_mode" == true ]]; then
     binary.local_worktree_dirty = sourceDirty === "true";
     binary.sha256hash = archiveChecksum;
     binary.architectures = build64Only === "true" ? ["64"] : ["64", "32"];
-    binary.host_architectures = ["x86_64"];
+    binary.host_architectures = [hostArch];
     // Decky Loader unconditionally downloads every remote_binary entry after
     // extracting a ZIP. Local packages already embed this verified archive,
     // so expose it only through MAKO-owned package metadata.
@@ -635,7 +691,7 @@ if [[ "$local_engine_mode" == true ]]; then
     "$archive_checksum" "$local_engine_commit" "$local_engine_dirty" \
     "$local_engine_label" "$flatpak_archive_name" "$flatpak_archive_checksum" \
     "$local_plugin_label" "$build_64_only" "$local_release_version" \
-    "$local_package_source_commit" "$local_package_worktree_dirty"
+    "$local_package_source_commit" "$local_package_worktree_dirty" "$host_arch"
 elif [[ "$local_plugin_mode" == true ]]; then
   node -e '
     const fs = require("node:fs");

@@ -1,0 +1,175 @@
+name: Upstream release sync
+
+# Keeps the AArch64 port current with published MAKO releases. When the
+# original repository publishes a new MAKO Decky release (GitHub's Latest
+# release, tagged plugin-vX.Y.Z after its Renderer), this merges that tag into
+# a sync branch and opens one pull request against the port branch. Unreleased
+# upstream commits are never followed. Nothing reaches the port until the
+# maintainer reviews the AArch64 CI and the x86-assumption audit and merges it;
+# that merge then lets aarch64-release.yml publish the matching AArch64 release.
+#
+# Requires the MAKO_SYNC_TOKEN secret: a fine-grained token for this fork with
+# Contents, Pull requests, and Workflows read/write. GITHUB_TOKEN cannot push
+# upstream workflow-file changes, and pull requests it opens would not start
+# the AArch64 CI.
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: eugeniosegala/MAKO
+  UPSTREAM_RELEASE_PREFIX: plugin-v
+  PORT_BRANCH: port/aarch64
+  SYNC_BRANCH: upstream-sync
+
+jobs:
+  sync:
+    name: Propose the latest upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the sync token
+        env:
+          MAKO_SYNC_TOKEN: ${{ secrets.MAKO_SYNC_TOKEN }}
+        run: |
+          if [ -z "$MAKO_SYNC_TOKEN" ]; then
+            echo "::error::Add the MAKO_SYNC_TOKEN repository secret (Contents, Pull requests, Workflows: read/write)."
+            exit 1
+          fi
+
+      - name: Check out the port branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PORT_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.MAKO_SYNC_TOKEN }}
+
+      - name: Find the latest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.MAKO_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)"
+          case "$tag" in
+            "$UPSTREAM_RELEASE_PREFIX"*) ;;
+            *)
+              # A release in progress publishes the Renderer before Decky.
+              echo "::notice::Latest upstream release $tag is not a $UPSTREAM_RELEASE_PREFIX release; waiting."
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          # Upstream tags live outside refs/tags so they never collide with
+          # this fork's own aarch64-v* release tags.
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPOSITORY.git" \
+            "+refs/tags/$tag:refs/upstream-tags/$tag"
+          git fetch --no-tags origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" || true
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the release into the sync branch
+        id: merge
+        if: steps.release.outputs.tag != ''
+        env:
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          upstream_sha="$(git rev-parse "refs/upstream-tags/$UPSTREAM_TAG^{commit}")"
+          port_sha="$(git rev-parse HEAD)"
+          remote_sync="$(git rev-parse --verify --quiet "refs/remotes/origin/$SYNC_BRANCH" || true)"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" "$port_sha"; then
+            echo "The port already contains $UPSTREAM_REPOSITORY $UPSTREAM_TAG."
+            echo "status=current" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$remote_sync" = "$upstream_sha" ]; then
+            echo "The pending conflicted sync branch already proposes $UPSTREAM_TAG."
+            echo "status=pending" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Continue from a pending sync branch that already contains the port,
+          # so conflict resolutions pushed to it are never discarded.
+          start="$port_sha"
+          if [ -n "$remote_sync" ] && git merge-base --is-ancestor "$port_sha" "$remote_sync"; then
+            start="$remote_sync"
+            if git merge-base --is-ancestor "$upstream_sha" "$remote_sync"; then
+              echo "The pending sync branch already proposes $UPSTREAM_TAG."
+              echo "status=pending" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          # Audit from the port checkout before the worktree changes.
+          bash scripts/upstream-sync-audit.sh "$port_sha" "$upstream_sha" > "$RUNNER_TEMP/audit.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --quiet -C "$SYNC_BRANCH" "$start"
+          if git merge --no-ff --no-edit \
+              -m "Merge upstream release $UPSTREAM_TAG into $PORT_BRANCH" \
+              "$upstream_sha"; then
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+            : > "$RUNNER_TEMP/conflicts.txt"
+          else
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+            git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            if [ "$start" != "$port_sha" ]; then
+              # Keep the maintainer's earlier resolution; only the pull request
+              # description reports that the newer release conflicts again.
+              exit 0
+            fi
+            # Propose the release itself; the pull request shows the conflicts.
+            git switch --quiet -C "$SYNC_BRANCH" "$upstream_sha"
+          fi
+
+          lease="refs/heads/$SYNC_BRANCH:${remote_sync}"
+          git push --force-with-lease="$lease" origin "HEAD:refs/heads/$SYNC_BRANCH"
+
+      - name: Open or update the sync pull request
+        if: steps.merge.outputs.status == 'merged' || steps.merge.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.MAKO_SYNC_TOKEN }}
+          STATUS: ${{ steps.merge.outputs.status }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${UPSTREAM_TAG#"$UPSTREAM_RELEASE_PREFIX"}"
+          body="$RUNNER_TEMP/body.md"
+          {
+            printf 'Upstream release: [`%s`](https://github.com/%s/releases/tag/%s)\n\n' \
+              "$UPSTREAM_TAG" "$UPSTREAM_REPOSITORY" "$UPSTREAM_TAG"
+            if [ "$STATUS" = conflict ]; then
+              printf '> [!WARNING]\n> This release conflicts with the AArch64 port. Resolve these files (GitHub conflict editor, or merge the `%s` tag into `%s` locally), keeping both the upstream feature and its AArch64 counterpart:\n\n' \
+                "$UPSTREAM_TAG" "$PORT_BRANCH"
+              sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+              printf '\n'
+            fi
+            printf 'Merging this pull request approves the port **and** publishes the `aarch64-v%s` release. Merge only after:\n\n' "$version"
+            printf -- '- [ ] the `AArch64` and `Tests` workflows pass on this branch;\n'
+            printf -- '- [ ] every flagged x86 assumption below has an AArch64 counterpart or is x86-only by design;\n'
+            printf -- '- [ ] the `mako-aarch64-tester-package` artifact passes `collect-aarch64-evidence.sh` on DroidDeck.\n\n'
+            cat "$RUNNER_TEMP/audit.md"
+          } > "$body"
+          title="Sync upstream release $UPSTREAM_TAG"
+          [ "$STATUS" = conflict ] && title="$title (conflicts)"
+
+          number="$(gh pr list --head "$SYNC_BRANCH" --base "$PORT_BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body-file "$body"
+          else
+            gh pr create --head "$SYNC_BRANCH" --base "$PORT_BRANCH" \
+              --title "$title" --body-file "$body"
+          fi

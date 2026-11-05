@@ -20,6 +20,7 @@ class _Logger:
 sys.modules.setdefault("decky", SimpleNamespace(logger=_Logger()))
 
 from py_modules.mako_plugin import configuration as configuration_module  # noqa: E402
+from py_modules.mako_plugin import constants as constants_module  # noqa: E402
 from py_modules.mako_plugin.configuration import (  # noqa: E402
     ConfigurationManager,
     ConfigurationService,
@@ -33,6 +34,7 @@ from py_modules.mako_plugin.config_schema_generated import (  # noqa: E402
     get_script_generation_logic,
 )
 from shared_config import VKBASALT_SHADER_VALUES  # noqa: E402
+from py_modules.mako_plugin import wrapper_generation as wrapper_generation_module  # noqa: E402
 from py_modules.mako_plugin.wrapper_generation import (  # noqa: E402
     generate_profile_script_content,
     steam_overlay_preload_policy_lines,
@@ -368,7 +370,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.service.spatial_scaling_layer_dir = root / "spatial"
             for directory, name in (
                 (self.service.gamescope_wsi_compatibility_dir,
-                 configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64),
+                 constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64),
                 (self.service.spatial_scaling_layer_dir,
                  configuration_module.SPATIAL_SCALING_JSON_FILENAME),
             ):
@@ -428,7 +430,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -489,7 +491,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             config = ConfigurationManager.get_defaults()
@@ -512,7 +514,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -544,7 +546,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -556,7 +558,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.service.mangohud_layer_dir = Path(system_dir)
             (
                 self.service.mangohud_layer_dir /
-                configuration_module.MANGOHUD_MANIFEST_FILENAME_64
+                constants_module.MANGOHUD_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             config = ConfigurationManager.get_defaults()
             config["scaling_enabled"] = True
@@ -589,7 +591,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             self.service.vkbasalt_layer_dir = Path(system_dir)
@@ -622,7 +624,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.service.mangohud_layer_dir = Path(system_dir)
             (
                 self.service.mangohud_layer_dir /
-                configuration_module.MANGOHUD_MANIFEST_FILENAME_64
+                constants_module.MANGOHUD_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             config = ConfigurationManager.get_defaults()
             config["external_vulkan_layer"] = "mangohud"
@@ -654,7 +656,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.service.mangohud_layer_dir = Path(system_dir)
             (
                 self.service.mangohud_layer_dir /
-                configuration_module.MANGOHUD_MANIFEST_FILENAME_32
+                constants_module.MANGOHUD_MANIFEST_FILENAME_32
             ).write_text("{}", encoding="utf-8")
             config = ConfigurationManager.get_defaults()
             config["external_vulkan_layer"] = "mangohud"
@@ -891,7 +893,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             config = ConfigurationManager.get_defaults()
@@ -1028,7 +1030,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -1065,7 +1067,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -1094,7 +1096,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             config = ConfigurationManager.get_defaults()
@@ -1116,7 +1118,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             config = ConfigurationManager.get_defaults()
@@ -1260,7 +1262,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
                 self.service.mangohud_layer_dir = Path(system_dir)
                 (
                     self.service.mangohud_layer_dir /
-                    configuration_module.MANGOHUD_MANIFEST_FILENAME_64
+                    constants_module.MANGOHUD_MANIFEST_FILENAME_64
                 ).write_text("{}", encoding="utf-8")
                 config = ConfigurationManager.get_defaults()
                 config["external_vulkan_layer"] = "mangohud"
@@ -1304,7 +1306,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
                 compatibility_path = Path(compatibility_dir)
                 (
                     compatibility_path /
-                    configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                    constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
                 ).write_text("{}", encoding="utf-8")
                 self.service.gamescope_wsi_compatibility_dir = (
                     compatibility_path
@@ -1338,7 +1340,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
                 compatibility_path = Path(compatibility_dir)
                 (
                     compatibility_path /
-                    configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                    constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
                 ).write_text("{}", encoding="utf-8")
                 self.service.gamescope_wsi_compatibility_dir = (
                     compatibility_path
@@ -1383,7 +1385,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path.mkdir()
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             self.service.config_dir = root / "config"
@@ -1677,7 +1679,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.service.gamescope_wsi_compatibility_dir.mkdir(parents=True)
             (
                 self.service.gamescope_wsi_compatibility_dir /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
 
             defaults = ConfigurationManager.get_defaults()
@@ -1908,7 +1910,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             compatibility_path = Path(compatibility_dir)
             (
                 compatibility_path /
-                configuration_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                constants_module.GAMESCOPE_WSI_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             self.service.gamescope_wsi_compatibility_dir = compatibility_path
             scaling_path = Path(scaling_dir)
@@ -2196,6 +2198,211 @@ class WrapperEnvironmentTests(unittest.TestCase):
             )
 
             self.assertEqual(result.stdout, "enable= disable=1\n")
+
+    def _use_renderer_architecture(self, architecture):
+        self.service.renderer_architecture = architecture
+        self.service._HOST_COMPATIBILITY_MARKER = (
+            wrapper_generation_module.host_compatibility_marker(architecture)
+        )
+
+    def _run_guard(self, uname, *, markers=(), arguments=()):
+        """Run the generated guard with a fake ``uname`` and host markers."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            test_bin = temp_path / "test-bin"
+            test_bin.mkdir()
+            test_uname = test_bin / "uname"
+            test_uname.write_text(
+                f"#!/bin/sh\nprintf '{uname}\\n'\n", encoding="utf-8"
+            )
+            test_uname.chmod(0o755)
+            # A launcher shaped like ``flatpak run <command>``.
+            fake_flatpak = test_bin / "flatpak"
+            fake_flatpak.write_text(
+                "#!/bin/sh\nshift\nexec \"$@\"\n", encoding="utf-8"
+            )
+            fake_flatpak.chmod(0o755)
+            game = temp_path / "game"
+            game.write_text(
+                "#!/bin/sh\nprintf 'game enable=%s disable=%s\\n' "
+                '"${ENABLE_MAKO:-}" "${DISABLE_MAKO:-}"\n',
+                encoding="utf-8",
+            )
+            game.chmod(0o755)
+            device_env = temp_path / "device-env"
+            droiddeck = temp_path / "droiddeck-session"
+            for marker in markers:
+                {"armada": device_env, "droiddeck": droiddeck}[marker].write_text(
+                    "", encoding="utf-8"
+                )
+            with (
+                patch.object(configuration_module, "ARMADA_DEVICE_ENV", device_env),
+                patch.object(
+                    configuration_module,
+                    "ARMADA_GAME_LAUNCH",
+                    temp_path / "missing-armada-game-launch",
+                ),
+                patch.object(
+                    configuration_module, "DROIDDECK_SESSION_MARKER", droiddeck
+                ),
+            ):
+                lines = self.service._generate_host_compatibility_guard_lines()
+            lines.extend(["export ENABLE_MAKO=1", 'exec "$@"'])
+            command = [str(game)] if not arguments else [*arguments, str(game)]
+            result = subprocess.run(
+                ["bash", "-c", "\n".join(lines), "mako-test", *command],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{test_bin}:{os.environ.get('PATH', '')}",
+                },
+            )
+            return result
+
+    def test_aarch64_renderer_runs_on_native_and_droiddeck_hosts(self):
+        self._use_renderer_architecture("aarch64")
+        for uname, markers in (
+            ("aarch64", ()),
+            ("arm64", ()),
+            # droiddeck-fex reports the translated ISA through uname.
+            ("x86_64", ("droiddeck",)),
+        ):
+            with self.subTest(uname=uname, markers=markers):
+                self.assertEqual(
+                    self._run_guard(uname, markers=markers).stdout,
+                    "game enable=1 disable=\n",
+                )
+
+    def test_aarch64_renderer_never_loads_on_a_foreign_or_armada_host(self):
+        self._use_renderer_architecture("aarch64")
+        for uname, markers in (
+            ("x86_64", ()),
+            ("riscv64", ()),
+            # Armada stays on its own launcher until it has hardware evidence.
+            ("aarch64", ("armada",)),
+            ("x86_64", ("armada",)),
+        ):
+            with self.subTest(uname=uname, markers=markers):
+                self.assertEqual(
+                    self._run_guard(uname, markers=markers).stdout,
+                    "game enable= disable=1\n",
+                )
+
+    def test_x86_renderer_never_loads_on_droiddeck(self):
+        self.assertEqual(self.service.renderer_architecture, "x86_64")
+        self.assertEqual(
+            self._run_guard("x86_64", markers=("droiddeck",)).stdout,
+            "game enable= disable=1\n",
+        )
+        self.assertEqual(
+            self._run_guard("x86_64").stdout,
+            "game enable=1 disable=\n",
+        )
+
+    def test_aarch64_renderer_bypasses_flatpak_launches(self):
+        self._use_renderer_architecture("aarch64")
+        result = self._run_guard("aarch64", arguments=("flatpak", "run"))
+        self.assertEqual(result.stdout, "game enable= disable=1\n")
+        self.assertIn(
+            "Flatpak launches are unsupported by the aarch64 Renderer",
+            result.stderr,
+        )
+
+    def test_wrapper_for_another_renderer_architecture_is_stale(self):
+        x86_script = self.service._generate_script_content(
+            ConfigurationManager.get_defaults()
+        )
+        self._use_renderer_architecture("aarch64")
+        self.assertNotIn(self.service._HOST_COMPATIBILITY_MARKER, x86_script)
+        self.assertIn(
+            "mako_renderer_arch=aarch64",
+            self.service._generate_script_content(
+                ConfigurationManager.get_defaults()
+            ),
+        )
+
+    def test_aarch64_renderer_uses_native_external_layer_identities(self):
+        self._use_renderer_architecture("aarch64")
+        with (
+            tempfile.TemporaryDirectory() as compatibility_dir,
+            tempfile.TemporaryDirectory() as mangohud_dir,
+        ):
+            self.service.gamescope_wsi_compatibility_dir = Path(compatibility_dir)
+            (
+                self.service.gamescope_wsi_compatibility_dir /
+                "VkLayer_FROG_gamescope_wsi.aarch64.json"
+            ).write_text("{}", encoding="utf-8")
+            self.service.mangohud_layer_dir = Path(mangohud_dir)
+            # A stray x86 manifest must never satisfy the AArch64 chain.
+            (self.service.mangohud_layer_dir / "MangoHud.x86.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            config = ConfigurationManager.get_defaults()
+            config["gamescope_wsi_compatibility"] = True
+            config["external_vulkan_layer"] = "mangohud"
+            without_manifest = self._evaluate(self.gamescope_environment, config)
+            (
+                self.service.mangohud_layer_dir / "MangoHud.aarch64.json"
+            ).write_text("{}", encoding="utf-8")
+            values = self._evaluate({
+                **self.gamescope_environment,
+                "VK_INSTANCE_LAYERS":
+                    "VK_LAYER_FROG_gamescope_wsi_aarch64:VK_LAYER_existing",
+            }, config)
+
+        self.assertEqual(without_manifest["MANGOHUD"], "")
+        self.assertEqual(
+            without_manifest["INSTANCE"],
+            "VK_LAYER_MAKO_render:VK_LAYER_FROG_gamescope_wsi_aarch64",
+        )
+        self.assertEqual(
+            values["INSTANCE"],
+            "VK_LAYER_MAKO_render:"
+            "VK_LAYER_FROG_gamescope_wsi_aarch64:"
+            "VK_LAYER_MANGOHUD_overlay_aarch64:"
+            "VK_LAYER_existing",
+        )
+        self.assertNotIn("x86", values["INSTANCE"])
+
+    def test_aarch64_steam_overlay_is_admitted_by_declared_layer(self):
+        self._use_renderer_architecture("aarch64")
+        config = {
+            **ConfigurationManager.get_defaults(),
+            "disable_steam_overlay": False,
+        }
+        with tempfile.TemporaryDirectory() as steam_layer_dir:
+            self.service.user_vulkan_layer_dir = Path(steam_layer_dir)
+            # x86 client manifests describe layers this host cannot load,
+            # even when they claim the 64-bit overlay identity.
+            for filename in ("steamoverlay_x86_64.json", "steamoverlay_i386.json"):
+                (self.service.user_vulkan_layer_dir / filename).write_text(
+                    '{"layer": {"name": "VK_LAYER_VALVE_steam_overlay_64"}}',
+                    encoding="utf-8",
+                )
+            decoys_only = self._evaluate(
+                {"ENABLE_VK_LAYER_VALVE_steam_overlay_1": "1"}, config
+            )
+            (self.service.user_vulkan_layer_dir / "steamoverlay_arm64.json").write_text(
+                '{"layer": {"name": "VK_LAYER_VALVE_steam_overlay_64"}}',
+                encoding="utf-8",
+            )
+            values = self._evaluate({
+                "ENABLE_VK_LAYER_VALVE_steam_overlay_1": "1",
+                "VK_INSTANCE_LAYERS":
+                    "VK_LAYER_existing:VK_LAYER_VALVE_steam_overlay_64",
+            }, config)
+
+        self.assertEqual(decoys_only["INSTANCE"], "")
+        self.assertEqual(decoys_only["LAYER_PATH"], "")
+        self.assertEqual(
+            values["INSTANCE"],
+            "VK_LAYER_MAKO_render:"
+            "VK_LAYER_VALVE_steam_overlay_64:"
+            "VK_LAYER_existing",
+        )
+        self.assertEqual(values["LAYER_PATH"], steam_layer_dir)
 
     def test_generated_wrapper_places_host_guard_before_mako_exports(self):
         script = self.service._generate_script_content(

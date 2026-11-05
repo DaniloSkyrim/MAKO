@@ -41,7 +41,7 @@ Join the official <a href="https://discord.gg/NAVkyCq7Rc" target="_blank" rel="n
 > [!TIP]
 > **Want update alerts?** MAKO Decky and MAKO Renderer are published independently. At the top-right of the <a href="https://github.com/eugeniosegala/MAKO" target="_blank" rel="noopener noreferrer">MAKO GitHub repository</a> page, click **Watch** > **Custom**, select **Releases**, then click **Apply**. GitHub will notify you when a new release is published, subject to your GitHub notification settings.
 
-Published Renderer packages currently target x86_64 Linux hosts and include layers for both 64-bit and 32-bit x86 game processes. Native AArch64/Armada packages are not included in this release.
+Published Renderer packages currently target x86_64 Linux hosts and include layers for both 64-bit and 32-bit x86 game processes. Native AArch64 tester packages for DroidDeck are built from source by the AArch64 workflow and are not published yet; Armada remains disabled. See [Armada, DroidDeck, and native AArch64 support](plugin/docs/ARMADA.md).
 
 ## ✨ Feature Highlights
 

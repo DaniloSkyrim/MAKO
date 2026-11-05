@@ -27,18 +27,19 @@ from .constants import (
     ARMADA_DEVICE_ENV,
     ARMADA_GAME_LAUNCH,
     CLI_DIR,
+    DROIDDECK_SESSION_MARKER,
     SHADER_TOOL_FILENAME,
     FLATPAK_IMPLICIT_LAYER_DIR,
-    GAMESCOPE_WSI_MANIFEST_FILENAME_64,
+    PLUGIN_ROOT,
     SPATIAL_SCALING_JSON_FILENAME,
-    MANGOHUD_MANIFEST_FILENAME_64,
-    MANGOHUD_MANIFEST_FILENAME_32,
     VKBASALT_MANIFEST_FILENAME_64,
     VKBASALT_MANIFEST_FILENAME_32,
     VKBASALT_SHADER_ASSET_FILENAMES,
+    host_layer_identities,
 )
 from .host_environment import detect_power_source
 from .managed_files import managed_install_transaction, write_managed_text_atomically
+from .renderer_package import bundled_renderer_host_architecture
 from .process_detection import (
     detect_processes_for_steam_app,
     is_matchable_process_name,
@@ -73,6 +74,16 @@ class ConfigurationService(BaseService):
             if development_build is None
             else development_build
         )
+        # One MAKO Decky package ships one native Renderer ISA. The wrapper
+        # names that ISA's external layers and admits only a matching host.
+        self.renderer_architecture = bundled_renderer_host_architecture(
+            PLUGIN_ROOT
+        )
+        self._HOST_COMPATIBILITY_MARKER = (
+            wrapper_generation.host_compatibility_marker(
+                self.renderer_architecture
+            )
+        )
         self._configuration_write_lock = RLock()
         self._shader_parameter_cache: dict[str, tuple[str, list[shader_parameters.ShaderEffectParameters]]] = {}
         self._shader_parameter_generation = 0
@@ -83,6 +94,7 @@ class ConfigurationService(BaseService):
     def _wrapper_generation_context(
             self) -> wrapper_generation.WrapperGenerationContext:
         """Capture current managed paths for one pure wrapper-generation call."""
+        identities = host_layer_identities(self.renderer_architecture)
         return wrapper_generation.WrapperGenerationContext(
             wrapper_format_marker=self._WRAPPER_FORMAT_MARKER,
             host_compatibility_marker=self._HOST_COMPATIBILITY_MARKER,
@@ -102,17 +114,23 @@ class ConfigurationService(BaseService):
             vkbasalt_profile_config_dir=self.vkbasalt_profile_config_dir,
             flatpak_implicit_layer_dir=FLATPAK_IMPLICIT_LAYER_DIR,
             gamescope_wsi_manifest_filename_64=(
-                GAMESCOPE_WSI_MANIFEST_FILENAME_64
+                identities.gamescope_wsi_manifest_filename
             ),
             spatial_scaling_manifest_filename_64=(
                 SPATIAL_SCALING_JSON_FILENAME
             ),
-            mangohud_manifest_filename_64=MANGOHUD_MANIFEST_FILENAME_64,
-            mangohud_manifest_filename_32=MANGOHUD_MANIFEST_FILENAME_32,
+            mangohud_manifest_filename_64=(
+                identities.mangohud_manifest_filename_64
+            ),
+            mangohud_manifest_filename_32=(
+                identities.mangohud_manifest_filename_32
+            ),
             vkbasalt_manifest_filename_64=VKBASALT_MANIFEST_FILENAME_64,
             vkbasalt_manifest_filename_32=VKBASALT_MANIFEST_FILENAME_32,
             armada_device_env=ARMADA_DEVICE_ENV,
             armada_game_launch=ARMADA_GAME_LAUNCH,
+            renderer_architecture=self.renderer_architecture,
+            droiddeck_session_marker=DROIDDECK_SESSION_MARKER,
         )
 
     @staticmethod
@@ -1022,24 +1040,23 @@ class ConfigurationService(BaseService):
             indent,
         )
 
-    @staticmethod
-    def _generate_host_compatibility_guard_lines() -> list[str]:
-        """Bypass MAKO before any exports on unsupported AArch64 hosts.
+    def _generate_host_compatibility_guard_lines(self) -> list[str]:
+        """Bypass MAKO before any exports unless the host matches the Renderer.
 
-        Current release packages contain only native x86_64 Renderer payloads.
-        Keep games launchable through Armada/FEX without exposing that x86
-        layer to a native AArch64 Vulkan stack. The root-owned Armada marker
-        handles translated ``uname`` results; the architecture check covers an
-        ordinary native AArch64 shell. This branch executes before MAKO, Vulkan
-        path, diagnostics, HDR, or competing-layer variables are changed.
+        Each package contains one native Renderer ISA. Keep games launchable
+        on any other host without exposing a foreign layer to its Vulkan
+        stack. The Armada and DroidDeck markers handle translated ``uname``
+        results; Armada itself stays on its own launcher. This branch executes
+        before MAKO, Vulkan path, diagnostics, HDR, or competing-layer
+        variables are changed.
         """
         return wrapper_generation.host_compatibility_guard_lines(
             ARMADA_DEVICE_ENV,
             ARMADA_GAME_LAUNCH,
-            ConfigurationService._HOST_COMPATIBILITY_MARKER,
-            ConfigurationService._generate_unsupported_host_passthrough_lines(
-                "    "
-            ),
+            self._HOST_COMPATIBILITY_MARKER,
+            self._generate_unsupported_host_passthrough_lines("    "),
+            renderer_architecture=self.renderer_architecture,
+            droiddeck_session_marker=DROIDDECK_SESSION_MARKER,
         )
 
     def _get_profile_data(self) -> ProfileData:

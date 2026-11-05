@@ -44,7 +44,7 @@ EOF
 # expose the host's implicit-layer directory to the game. Python runs only when
 # MangoHud is requested, not on normal launches or in the rendering loop.
 mako_mangohud_manifests() {
-    python3 - "$1" <<'PYTHON'
+    python3 - "$1" "$mako_package_arch" <<'PYTHON'
 import contextlib
 import fcntl
 import json
@@ -56,8 +56,19 @@ import sys
 import tempfile
 
 
+# MangoHud names its manifests and layers after the process ISA. The Vulkan
+# application processes MAKO serves share the installed package architecture.
+MANIFEST_SUFFIXES = {
+    "x86_64": (("x86_64", "64"), ("x86", "32")),
+    "aarch64": (("aarch64", "64"),),
+}
+MACHINES = {"x86_64": ("x86_64", "AMD64"), "aarch64": ("aarch64", "arm64")}
+PACKAGE_ARCH = sys.argv[2] if sys.argv[2] in MANIFEST_SUFFIXES else "x86_64"
+MANIFEST_NAMES = {"MangoHud." + suffix + ".json" for suffix, _ in MANIFEST_SUFFIXES[PACKAGE_ARCH]}
+
+
 def discover():
-    if os.environ.get("FLATPAK_ID") or platform.machine() not in ("x86_64", "AMD64"):
+    if os.environ.get("FLATPAK_ID") or platform.machine() not in MACHINES[PACKAGE_ARCH]:
         return {}
     home = Path.home()
     roots = [Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config"),
@@ -65,7 +76,7 @@ def discover():
     for key, default in (("XDG_CONFIG_DIRS", "/etc/xdg"), ("XDG_DATA_DIRS", "/usr/local/share:/usr/share")):
         roots.extend(Path(value) for value in (os.environ.get(key) or default).split(":") if value.startswith("/"))
     admitted = {}
-    for suffix, arch in (("x86_64", "64"), ("x86", "32")):
+    for suffix, arch in MANIFEST_SUFFIXES[PACKAGE_ARCH]:
         filename = "MangoHud." + suffix + ".json"
         for root in roots:
             if not root.is_absolute():
@@ -127,7 +138,7 @@ def prepare(manifests):
     with locked_directory(directory) as info:
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
             raise ValueError("MangoHud cache directory is not private")
-        names = {"MangoHud.x86_64.json", "MangoHud.x86.json"}
+        names = MANIFEST_NAMES
         if any(path.name not in names for path in directory.iterdir()):
             raise ValueError("unexpected files in MangoHud cache directory")
         for name in names:
@@ -162,6 +173,26 @@ except (OSError, ValueError) as error:
     sys.exit(1)
 PYTHON
 }
+
+# The package records its native host architecture at build time. Packages
+# that predate the record are x86_64, the only architecture they shipped for.
+mako_package_arch=x86_64
+for mako_arch_record in \
+        "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)/share/mako-render/host-architecture" \
+        "${XDG_DATA_HOME:-${HOME:-}/.local/share}/mako-render/host-architecture"; do
+    if [[ -f "$mako_arch_record" && -r "$mako_arch_record" ]]; then
+        read -r mako_package_arch < "$mako_arch_record" || :
+        break
+    fi
+done
+case "$mako_package_arch" in
+    x86_64|aarch64) ;;
+    *)
+        echo "MAKO Renderer: unsupported package host architecture: $mako_package_arch" >&2
+        exit 1
+        ;;
+esac
+unset mako_arch_record
 
 if (($# == 0)); then
     echo "mako-launch requires a command to run." >&2
@@ -405,11 +436,28 @@ fi
 if [[ "$mako_disable_steam_overlay" != 1 &&
         "${ENABLE_VK_LAYER_VALVE_steam_overlay_1:-0}" == 1 &&
         "$mako_gamescope_session" != 1 && "$mako_flatpak_launch" != 1 ]]; then
-    if [[ -r "$mako_steam_overlay_layer_dir/steamoverlay_x86_64.json" ]]; then
-        mako_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64
-    fi
-    if [[ -r "$mako_steam_overlay_layer_dir/steamoverlay_i386.json" ]]; then
-        mako_steam_overlay_layers="${mako_steam_overlay_layers:+$mako_steam_overlay_layers:}VK_LAYER_VALVE_steam_overlay_32"
+    if [[ "$mako_package_arch" == aarch64 ]]; then
+        # Steam's ARM client names its overlay manifest differently from the
+        # x86 one. Admit only a regular per-user manifest that declares the
+        # 64-bit overlay layer; never guess a file name.
+        for mako_steam_overlay_manifest in "$mako_steam_overlay_layer_dir"/*.json; do
+            case "${mako_steam_overlay_manifest##*/}" in
+                steamoverlay_x86_64.json|steamoverlay_i386.json) continue ;;
+            esac
+            if [[ -f "$mako_steam_overlay_manifest" && -r "$mako_steam_overlay_manifest" ]] &&
+                    grep -Fq '"VK_LAYER_VALVE_steam_overlay_64"' "$mako_steam_overlay_manifest"; then
+                mako_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64
+                break
+            fi
+        done
+        unset mako_steam_overlay_manifest
+    else
+        if [[ -r "$mako_steam_overlay_layer_dir/steamoverlay_x86_64.json" ]]; then
+            mako_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64
+        fi
+        if [[ -r "$mako_steam_overlay_layer_dir/steamoverlay_i386.json" ]]; then
+            mako_steam_overlay_layers="${mako_steam_overlay_layers:+$mako_steam_overlay_layers:}VK_LAYER_VALVE_steam_overlay_32"
+        fi
     fi
     if [[ -n "$mako_steam_overlay_layers" ]]; then
         export VK_LAYER_PATH="$mako_steam_overlay_layer_dir${VK_LAYER_PATH:+:$VK_LAYER_PATH}"
@@ -423,7 +471,7 @@ mako_existing_instance_layers=":${VK_INSTANCE_LAYERS:-}:"
 while [[ "$mako_existing_instance_layers" == *":VK_LAYER_VKBASALT_post_processing:"* ]]; do
     mako_existing_instance_layers="${mako_existing_instance_layers/:VK_LAYER_VKBASALT_post_processing:/:}"
 done
-for mako_mangohud_layer in VK_LAYER_MANGOHUD_overlay_x86_64 VK_LAYER_MANGOHUD_overlay_x86; do
+for mako_mangohud_layer in VK_LAYER_MANGOHUD_overlay_x86_64 VK_LAYER_MANGOHUD_overlay_x86 VK_LAYER_MANGOHUD_overlay_aarch64; do
     while [[ "$mako_existing_instance_layers" == *":$mako_mangohud_layer:"* ]]; do
         mako_existing_instance_layers="${mako_existing_instance_layers/:$mako_mangohud_layer:/:}"
     done
@@ -442,20 +490,25 @@ mako_vkbasalt_enabled=0
 mako_vkbasalt_layer_path="$mako_install_prefix/share/mako-render/vulkan/vkbasalt.d"
 mako_vkbasalt_library64="$mako_install_prefix/lib/vkbasalt/libvkbasalt.so"
 mako_vkbasalt_library32="$mako_install_prefix/lib32/vkbasalt/libvkbasalt.so"
-if [[ ! -r "$mako_vkbasalt_layer_path/vkBasalt.json" ||
-        ! -r "$mako_vkbasalt_layer_path/vkBasalt.x86.json" ||
-        ! -r "$mako_vkbasalt_library64" ||
-        ! -r "$mako_vkbasalt_library32" ]]; then
+# x86_64 packages carry a 32-bit copy for 32-bit games; AArch64 has no 32-bit
+# Vulkan application processes, so only the 64-bit payload is required there.
+mako_vkbasalt_payload_complete() {
+    [[ -r "$mako_vkbasalt_layer_path/vkBasalt.json" && -r "$mako_vkbasalt_library64" ]] || return 1
+    [[ "$mako_package_arch" != x86_64 ]] && return 0
+    [[ -r "$mako_vkbasalt_layer_path/vkBasalt.x86.json" && -r "$mako_vkbasalt_library32" ]]
+}
+if ! mako_vkbasalt_payload_complete; then
     mako_vkbasalt_layer_path="$mako_data_home/mako-render/vulkan/vkbasalt.d"
     mako_vkbasalt_library64="$mako_data_home/../lib/vkbasalt/libvkbasalt.so"
     mako_vkbasalt_library32="$mako_data_home/../lib32/vkbasalt/libvkbasalt.so"
 fi
 if [[ "$mako_vkbasalt_requested" == 1 && "${DISABLE_MAKO:-0}" != 1 ]]; then
-    if [[ ! -r "$mako_vkbasalt_layer_path/vkBasalt.json" ||
-            ! -r "$mako_vkbasalt_layer_path/vkBasalt.x86.json" ||
-            ! -r "$mako_vkbasalt_library64" ||
-            ! -r "$mako_vkbasalt_library32" ]]; then
-        echo "mako-launch: private 64-bit/32-bit vkBasalt payload is unavailable; continuing with MAKO Renderer only." >&2
+    if ! mako_vkbasalt_payload_complete; then
+        if [[ "$mako_package_arch" == x86_64 ]]; then
+            echo "mako-launch: private 64-bit/32-bit vkBasalt payload is unavailable; continuing with MAKO Renderer only." >&2
+        else
+            echo "mako-launch: private $mako_package_arch vkBasalt payload is unavailable; continuing with MAKO Renderer only." >&2
+        fi
     elif [[ -n "$mako_vkbasalt_config" && ! -r "$mako_vkbasalt_config" ]]; then
         echo "mako-launch: vkBasalt config is not readable: $mako_vkbasalt_config; continuing with MAKO Renderer only." >&2
     else
@@ -509,14 +562,14 @@ if [[ "$mako_mangohud_requested" == 1 && "${DISABLE_MAKO:-0}" != 1 ]]; then
         unset DISABLE_MANGOHUD
         # Match Decky's 64-bit explicit ordering. The guarded 32-bit manifest
         # stays implicit and is admitted only to a matching 32-bit process.
-        if [[ -r "$mako_mangohud_directory/MangoHud.x86_64.json" ]]; then
+        if [[ -r "$mako_mangohud_directory/MangoHud.$mako_package_arch.json" ]]; then
             mako_mangohud_chain=":${VK_INSTANCE_LAYERS:-}:"
             while [[ "$mako_mangohud_chain" == *":VK_LAYER_MAKO_render:"* ]]; do
                 mako_mangohud_chain="${mako_mangohud_chain/:VK_LAYER_MAKO_render:/:}"
             done
             mako_mangohud_chain="${mako_mangohud_chain#:}"
             mako_mangohud_chain="${mako_mangohud_chain%:}"
-            export VK_INSTANCE_LAYERS="VK_LAYER_MAKO_render:VK_LAYER_MANGOHUD_overlay_x86_64${mako_mangohud_chain:+:$mako_mangohud_chain}"
+            export VK_INSTANCE_LAYERS="VK_LAYER_MAKO_render:VK_LAYER_MANGOHUD_overlay_$mako_package_arch${mako_mangohud_chain:+:$mako_mangohud_chain}"
         fi
         mako_mangohud_config="${XDG_CONFIG_HOME:-$HOME/.config}/mako-render/mangohud.conf"
         if [[ -f "$mako_mangohud_config" && -r "$mako_mangohud_config" ]]; then
@@ -580,7 +633,8 @@ unset mako_steam_overlay_preload_removed
 unset mako_steam_overlay_preload_filter_requested mako_disable_steam_overlay
 unset mako_launcher_dir mako_install_prefix mako_data_home mako_implicit_layer_path
 unset mako_existing_instance_layers mako_vkbasalt_layer_path
-unset mako_vkbasalt_library64 mako_vkbasalt_library32
+unset mako_vkbasalt_library64 mako_vkbasalt_library32 mako_package_arch
+unset -f mako_vkbasalt_payload_complete
 unset mako_vkbasalt_requested mako_vkbasalt_config
 unset mako_steam_overlay_layer_dir mako_steam_overlay_layer
 unset mako_steam_overlay_layers mako_gamescope_session mako_flatpak_launch

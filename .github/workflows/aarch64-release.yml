@@ -1,0 +1,162 @@
+name: AArch64 release
+
+# Publishes this fork's AArch64 release for an upstream MAKO release. It runs
+# when the maintainer merges an upstream release sync into the port branch
+# (that merge is the approval), or by manual dispatch. A release is published
+# only when the port contains an upstream plugin-vX.Y.Z release that has no
+# aarch64-vX.Y.Z release yet. Published tags and assets are never replaced:
+# rebuilding a release requires a new revision.
+
+on:
+  push:
+    branches: [port/aarch64]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Optional rebuild revision (publishes aarch64-vX.Y.Z-rN); leave empty for the first release of a version.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aarch64-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: eugeniosegala/MAKO
+  UPSTREAM_RELEASE_PREFIX: plugin-v
+
+jobs:
+  decide:
+    name: Find an unreleased upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      upstream_tag: ${{ steps.decide.outputs.upstream_tag }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select the release
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPOSITORY.git" \
+            "+refs/tags/$UPSTREAM_RELEASE_PREFIX*:refs/upstream-tags/$UPSTREAM_RELEASE_PREFIX*"
+          upstream_tag=""
+          for candidate in $(git for-each-ref --sort=-version:refname \
+              --format='%(refname:strip=2)' "refs/upstream-tags/$UPSTREAM_RELEASE_PREFIX*"); do
+            if git merge-base --is-ancestor "refs/upstream-tags/$candidate^{commit}" HEAD; then
+              upstream_tag="$candidate"
+              break
+            fi
+          done
+          if [ -z "$upstream_tag" ]; then
+            echo "::notice::The port contains no upstream release yet."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            # Only the merge that brings an upstream release in is approval to
+            # publish it. Pushing the branch, port fixes, and an initial push
+            # never publish on their own; dispatch the workflow for those.
+            if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null ||
+                git merge-base --is-ancestor "refs/upstream-tags/$upstream_tag^{commit}" "$BEFORE"; then
+              echo "::notice::This push did not bring in a new upstream release; nothing to publish."
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          version="${upstream_tag#"$UPSTREAM_RELEASE_PREFIX"}"
+          if [ -n "$REVISION" ]; then
+            if ! [[ "$REVISION" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::revision must be a positive integer"
+              exit 1
+            fi
+            tag="aarch64-v$version-r$REVISION"
+          else
+            tag="aarch64-v$version"
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+              git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "::error::$tag already exists; published releases are immutable. Dispatch with the next revision."
+              exit 1
+            fi
+            echo "::notice::$tag is already published; nothing to release."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The packaged Decky version comes from the port's release notes; it
+          # must describe the same upstream release.
+          notes_version="$(node plugin/scripts/read-release-info.mjs \
+            plugin/RELEASE_NOTES.md "MAKO Decky" --version)"
+          if [ "$notes_version" != "$version" ]; then
+            echo "::error::plugin/RELEASE_NOTES.md describes $notes_version, but the newest merged upstream release is $upstream_tag."
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "upstream_tag=$upstream_tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Publishing $tag for upstream $upstream_tag."
+
+  build:
+    name: Build and test
+    needs: decide
+    if: needs.decide.outputs.tag != ''
+    uses: ./.github/workflows/aarch64.yml
+
+  publish:
+    name: Publish ${{ needs.decide.outputs.tag }}
+    needs: [decide, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Add required reviewers to this environment for a second approval
+    # between a successful build and publication.
+    environment: aarch64-release
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified AArch64 package
+        uses: actions/download-artifact@v7
+        with:
+          name: mako-aarch64-tester-package
+          path: dist
+
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.decide.outputs.tag }}
+          UPSTREAM_TAG: ${{ needs.decide.outputs.upstream_tag }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          Native AArch64 build of [MAKO $VERSION]($GITHUB_SERVER_URL/$UPSTREAM_REPOSITORY/releases/tag/$UPSTREAM_TAG) for DroidDeck and other SteamOS-on-ARM hosts, compiled from \`$GITHUB_SHA\` on a native arm64 runner. See the upstream release for its features.
+
+          - Install the \`MAKO-Decky-local.*.aarch64.zip\` asset through Decky Loader, then run MAKO's installer.
+          - The Renderer is 64-bit AArch64 only, for wine-arm64 Proton games and x86 games reaching the native Vulkan loader through FEX.
+          - Flatpak launches and native Remote Play are unavailable on AArch64, and Armada stays disabled.
+          - \`collect-aarch64-evidence.sh\` collects read-only diagnostics from an installed package.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "MAKO $VERSION for AArch64" \
+            --notes-file notes.md

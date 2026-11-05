@@ -1,0 +1,228 @@
+name: AArch64
+
+# Native AArch64 validation and tester packages for DroidDeck and other
+# SteamOS-on-ARM hosts. Every job runs on a native arm64 runner: MAKO never
+# packages cross-compiled Vulkan layers, and the vkBasalt fork is compiled from
+# its pinned source on the target architecture.
+
+on:
+  workflow_dispatch:
+  # aarch64-release.yml reuses these gates and the tester package.
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aarch64-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  decky:
+    name: MAKO Decky (aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: plugin/pnpm-lock.yaml
+
+      - name: Set up Decky Python runtime
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install locked frontend dependencies
+        working-directory: plugin
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Flatpak test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak
+          flatpak --version
+
+      - name: Test backend behavior on a native AArch64 host
+        working-directory: plugin
+        run: pnpm run test:backend
+
+      - name: Type-check frontend tests
+        working-directory: plugin
+        run: pnpm run test:frontend:typecheck
+
+      - name: Test frontend behavior
+        working-directory: plugin
+        run: pnpm run test:frontend
+
+  renderer:
+    name: MAKO Renderer (aarch64, ${{ matrix.toolchain }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: gcc
+            cc: gcc
+            cxx: g++
+          - toolchain: clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Renderer build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build g++ clang \
+            libvulkan-dev libx11-dev libxcb1-dev \
+            qt6-base-dev qt6-declarative-dev \
+            qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates qml6-module-qtquick-window
+
+      - name: Fetch the native package Vulkan headers
+        run: |
+          revision="$(cat engine/vulkan-headers-revision.txt)"
+          git clone --depth=1 --branch "$revision" \
+            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/mako-vulkan-headers"
+          echo "CXXFLAGS=-I$RUNNER_TEMP/mako-vulkan-headers/include" >> "$GITHUB_ENV"
+
+      - name: Configure Renderer tests
+        run: >-
+          cmake -S engine -B engine/build/ci-aarch64-${{ matrix.toolchain }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DMAKO_BUILD_VK_LAYER=ON
+          -DMAKO_BUILD_UI=ON
+          -DMAKO_BUILD_CLI=ON
+          -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON
+          -DMAKO_GPU_QUALITY_TEST=OFF
+
+      - name: Build Renderer and test executables
+        run: cmake --build engine/build/ci-aarch64-${{ matrix.toolchain }}
+
+      - name: Run Renderer tests
+        run: ctest --test-dir engine/build/ci-aarch64-${{ matrix.toolchain }} --output-on-failure
+
+  renderer-sanitizers:
+    name: MAKO Renderer (aarch64, ASan + UBSan)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      CC: gcc
+      CXX: g++
+      MAKO_ENABLE_SANITIZERS: ON
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install sanitizer build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libvulkan-dev libx11-dev libxcb1-dev
+
+      - name: Fetch the shared Vulkan headers
+        run: |
+          revision="$(cat engine/vulkan-headers-revision.txt)"
+          git clone --depth=1 --branch "$revision" \
+            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/mako-vulkan-headers"
+          echo "CXXFLAGS=-I$RUNNER_TEMP/mako-vulkan-headers/include" >> "$GITHUB_ENV"
+
+      - name: Run sanitized portable policy tests
+        working-directory: engine
+        run: ./scripts/test-adaptive-scheduler.sh
+
+  tester-package:
+    name: AArch64 tester package
+    needs: [decky, renderer]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          # Local package labels record the source commit.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: plugin/pnpm-lock.yaml
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils xz-utils zip unzip
+          docker version
+
+      - name: Install locked frontend dependencies
+        working-directory: plugin
+        run: pnpm install --frozen-lockfile
+
+      # The portable builder runs the release baseline (Ubuntu 22.04, Qt 6.2)
+      # as a native linux/arm64 container, builds vkBasalt from its pin, runs
+      # CTest and verifies every payload ELF targets AArch64.
+      - name: Build the AArch64 Renderer and MAKO Decky ZIP
+        env:
+          MAKO_PORTABLE_PACKAGE: "1"
+        working-directory: plugin
+        run: ./scripts/package-local.sh --local-engine-repo ../engine --host-arch aarch64
+
+      - name: Verify the AArch64 payload
+        run: |
+          set -euo pipefail
+          zip_path="$(find plugin/out -maxdepth 1 -name '*.aarch64*.zip' -print -quit)"
+          test -n "$zip_path"
+          inspect="$RUNNER_TEMP/mako-zip"
+          rm -rf "$inspect" && mkdir -p "$inspect"
+          unzip -q "$zip_path" -d "$inspect"
+          archive="$(find "$inspect" -path '*/bin/MAKO-Renderer-*-linux-aarch64.tar.xz' -print -quit)"
+          test -n "$archive"
+          test "$(tar -xJOf "$archive" ./share/mako-render/host-architecture)" = aarch64
+          payload="$RUNNER_TEMP/mako-payload"
+          rm -rf "$payload" && mkdir -p "$payload"
+          tar -C "$payload" -xJf "$archive"
+          test ! -e "$payload/lib32"
+          for library in lib/libmako-render.so lib/libmako-render-scaling.so lib/vkbasalt/libvkbasalt.so; do
+            readelf -h "$payload/$library" | grep -E 'Machine:[[:space:]]+AArch64'
+          done
+          dist="$RUNNER_TEMP/mako-aarch64-dist"
+          rm -rf "$dist" && mkdir -p "$dist"
+          cp "$zip_path" "$archive" scripts/collect-aarch64-evidence.sh "$dist/"
+          (cd "$dist" && sha256sum -- * > SHA256SUMS)
+          echo "MAKO_AARCH64_DIST=$dist" >> "$GITHUB_ENV"
+
+      - name: Retain AArch64 tester package
+        uses: actions/upload-artifact@v7
+        with:
+          name: mako-aarch64-tester-package
+          path: ${{ env.MAKO_AARCH64_DIST }}
+          if-no-files-found: error
+          retention-days: 30

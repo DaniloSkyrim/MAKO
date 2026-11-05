@@ -3,7 +3,7 @@ Constants for the MAKO Decky.
 """
 
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from shared_config import (
     EXTERNAL_VULKAN_LAYER_MANGOHUD,
@@ -152,6 +152,74 @@ MANGOHUD_MANIFEST_FILENAME_64 = "MangoHud.x86_64.json"
 MANGOHUD_MANIFEST_FILENAME_32 = "MangoHud.x86.json"
 MANGOHUD_LAYER_NAME_64 = "VK_LAYER_MANGOHUD_overlay_x86_64"
 MANGOHUD_LAYER_NAME_32 = "VK_LAYER_MANGOHUD_overlay_x86"
+
+
+class HostLayerIdentities(NamedTuple):
+    """Architecture-specific external layer identities for one native host.
+
+    Meson-built Vulkan layers name their manifest, library, and layer after
+    the host CPU family. AArch64 hosts have no 32-bit Vulkan client payload,
+    so their 32-bit MangoHud identity is absent rather than an x86 name.
+    """
+
+    gamescope_wsi_layer_name: str
+    gamescope_wsi_manifest_filename: str
+    gamescope_wsi_library_filename: str
+    mangohud_layer_name_64: str
+    mangohud_manifest_filename_64: str
+    mangohud_layer_name_32: Optional[str]
+    mangohud_manifest_filename_32: Optional[str]
+    steam_overlay_manifest_filenames: tuple[str, ...]
+
+
+SUPPORTED_RENDERER_HOST_ARCHITECTURES = ("x86_64", "aarch64")
+# Packages published before the package architecture record are x86_64.
+LEGACY_RENDERER_HOST_ARCHITECTURE = "x86_64"
+RENDERER_HOST_ARCHITECTURE_RECORD = "host-architecture"
+HOST_LAYER_IDENTITIES = {
+    "x86_64": HostLayerIdentities(
+        gamescope_wsi_layer_name=GAMESCOPE_WSI_LAYER_NAME_64,
+        gamescope_wsi_manifest_filename=GAMESCOPE_WSI_MANIFEST_FILENAME_64,
+        gamescope_wsi_library_filename=GAMESCOPE_WSI_LIBRARY_FILENAME_64,
+        mangohud_layer_name_64=MANGOHUD_LAYER_NAME_64,
+        mangohud_manifest_filename_64=MANGOHUD_MANIFEST_FILENAME_64,
+        mangohud_layer_name_32=MANGOHUD_LAYER_NAME_32,
+        mangohud_manifest_filename_32=MANGOHUD_MANIFEST_FILENAME_32,
+        steam_overlay_manifest_filenames=(
+            "steamoverlay_x86_64.json",
+            "steamoverlay_i386.json",
+        ),
+    ),
+    "aarch64": HostLayerIdentities(
+        gamescope_wsi_layer_name="VK_LAYER_FROG_gamescope_wsi_aarch64",
+        gamescope_wsi_manifest_filename=(
+            "VkLayer_FROG_gamescope_wsi.aarch64.json"
+        ),
+        gamescope_wsi_library_filename=(
+            "libVkLayer_FROG_gamescope_wsi_aarch64.so"
+        ),
+        mangohud_layer_name_64="VK_LAYER_MANGOHUD_overlay_aarch64",
+        mangohud_manifest_filename_64="MangoHud.aarch64.json",
+        mangohud_layer_name_32=None,
+        mangohud_manifest_filename_32=None,
+        # The ARM Steam client's overlay manifest name is not a stable
+        # contract; consumers admit it by its declared 64-bit layer name.
+        steam_overlay_manifest_filenames=(),
+    ),
+}
+STEAM_OVERLAY_LAYER_NAME_64 = "VK_LAYER_VALVE_steam_overlay_64"
+
+
+def host_layer_identities(architecture: str) -> HostLayerIdentities:
+    """Return the external layer identities for a supported Renderer host."""
+    try:
+        return HOST_LAYER_IDENTITIES[architecture]
+    except KeyError:
+        raise ValueError(
+            f"unsupported MAKO Renderer host architecture: {architecture}"
+        ) from None
+
+
 MANGOHUD_CONFIG_FILENAME = "mangohud.conf"
 MANGOHUD_CONFIG_FILE_ENV = "MANGOHUD_CONFIGFILE"
 VKBASALT_MANIFEST_FILENAME_64 = "vkBasalt.json"
@@ -204,8 +272,11 @@ DECKY_NATIVE_RENDERER_RELATIVE_PATHS = (
     f"{SPATIAL_SCALING_LAYER_DIR}/{SPATIAL_SCALING_JSON32_FILENAME}",
     f"{GAMESCOPE_WSI_COMPATIBILITY_LAYER_DIR}/{GAMESCOPE_WSI_MANIFEST_FILENAME_64}",
     f"{GAMESCOPE_WSI_COMPATIBILITY_LAYER_DIR}/{GAMESCOPE_WSI_LIBRARY_FILENAME_64}",
+    f"{GAMESCOPE_WSI_COMPATIBILITY_LAYER_DIR}/VkLayer_FROG_gamescope_wsi.aarch64.json",
+    f"{GAMESCOPE_WSI_COMPATIBILITY_LAYER_DIR}/libVkLayer_FROG_gamescope_wsi_aarch64.so",
     f"{MANGOHUD_LAYER_DIR}/{MANGOHUD_MANIFEST_FILENAME_64}",
     f"{MANGOHUD_LAYER_DIR}/{MANGOHUD_MANIFEST_FILENAME_32}",
+    f"{MANGOHUD_LAYER_DIR}/MangoHud.aarch64.json",
     f"{VKBASALT_LAYER_DIR}/{VKBASALT_MANIFEST_FILENAME_64}",
     f"{VKBASALT_LAYER_DIR}/{VKBASALT_MANIFEST_FILENAME_32}",
     *(f"{VKBASALT_SHADER_DIR}/{name}"
@@ -214,6 +285,7 @@ DECKY_NATIVE_RENDERER_RELATIVE_PATHS = (
     f"{CLI_DIR}/{SHADER_TOOL_FILENAME}",
     f"{CLI_DIR}/{VRR_LEASE_FILENAME}",
     f"{MAKO_ROOT}/installed-engine.json",
+    f"{MAKO_ROOT}/host-architecture",
     f"{MAKO_ROOT}/{ACTIVE_RENDERER_STATE_FILENAME}",
     MAKO_WRAPPER_RELATIVE_PATH,
     DIAGNOSTICS_SCRIPT_NAME,
@@ -256,6 +328,10 @@ VK_ADD_IMPLICIT_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 # game-specific runtime and controller configuration.
 ARMADA_DEVICE_ENV = Path("/usr/libexec/armada/device-env")
 ARMADA_GAME_LAUNCH = Path("/usr/libexec/armada/armada-game-launch")
+# DroidDeck runs SteamOS userspace inside an Arch Linux ARM proot on Android.
+# Its session helper identifies that native AArch64 host even when Decky's
+# Python runs as an x86_64 process through droiddeck-fex.
+DROIDDECK_SESSION_MARKER = Path("/usr/local/bin/droiddeck-session")
 
 LOSSLESS_SCALING_DIRECTORY = Path("Lossless Scaling")
 LOSSLESS_DLL_NAME = "Lossless.dll"

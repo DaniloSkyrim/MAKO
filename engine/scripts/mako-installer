@@ -41,8 +41,11 @@ decky_renderer_relative_paths=(
     ".local/share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.x86.json"
     ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/VkLayer_FROG_gamescope_wsi.x86_64.json"
     ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/libVkLayer_FROG_gamescope_wsi_x86_64.so"
+    ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/VkLayer_FROG_gamescope_wsi.aarch64.json"
+    ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/libVkLayer_FROG_gamescope_wsi_aarch64.so"
     ".local/share/mako-render/vulkan/mangohud.d/MangoHud.x86_64.json"
     ".local/share/mako-render/vulkan/mangohud.d/MangoHud.x86.json"
+    ".local/share/mako-render/vulkan/mangohud.d/MangoHud.aarch64.json"
     ".local/share/mako-render/vulkan/vkbasalt.d/vkBasalt.json"
     ".local/share/mako-render/vulkan/vkbasalt.d/vkBasalt.x86.json"
     ".local/share/mako-render/vkbasalt-shaders/BleachBypass.fx"
@@ -72,6 +75,7 @@ decky_renderer_relative_paths=(
     ".local/share/mako-render/bin/mako-shader-tool"
     ".local/share/mako-render/bin/mako-vrr-lease"
     ".local/share/mako-render/installed-engine.json"
+    ".local/share/mako-render/host-architecture"
     ".local/share/mako-render/active-renderer.json"
     ".local/bin/mako-run"
     ".local/bin/mako-diagnostics"
@@ -349,6 +353,28 @@ prepare_install_destination() {
     fi
 }
 
+# A Vulkan layer runs inside the game process, so the payload ISA must match the
+# native host. Packages that predate the record shipped only for x86_64.
+validate_payload_architecture() {
+    local payload_arch=x86_64 host_arch record="$script_dir/share/mako-render/host-architecture"
+    if [[ -f "$record" ]]; then
+        manifest_contains_path "$payload_manifest" share/mako-render/host-architecture ||
+            fail "The package architecture record is not covered by its install manifest."
+        payload_arch="$(tr -d '[:space:]' < "$record")"
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64) host_arch=x86_64 ;;
+        aarch64|arm64) host_arch=aarch64 ;;
+        *) host_arch="$(uname -m)" ;;
+    esac
+    case "$payload_arch" in
+        x86_64|aarch64) ;;
+        *) fail "The package declares an unsupported host architecture: $payload_arch" ;;
+    esac
+    [[ "$payload_arch" == "$host_arch" ]] ||
+        fail "This MAKO Renderer package is built for $payload_arch, but this system is $host_arch. Download the $host_arch package instead."
+}
+
 install_payload() {
     [[ -f "$payload_manifest" && -f "$version_file" ]] ||
         fail "Open ‘Install MAKO Renderer’ from the extracted MAKO Renderer archive."
@@ -367,6 +393,7 @@ install_payload() {
     if [[ -f "$state_manifest" ]]; then
         validate_manifest "$state_manifest"
     fi
+    validate_payload_architecture
 
     if ! confirm "Install MAKO Renderer $version to $install_prefix? Existing MAKO Renderer files in that location will be safely updated. Your profiles will be kept."; then
         exit 0

@@ -33,6 +33,20 @@ SOURCE_PATHS = {
     "checksums": "SHA256SUMS",
 }
 OPTIONAL_SOURCE_PATHS = {"bin/mako-shader-tool"}
+# A native AArch64 package has no published vkBasalt binary. It is compiled in
+# MAKO's own build from the exact fork commit recorded in the x86 pin, so the
+# reviewed source and Vulkan header provenance stay identical across hosts.
+AARCH64_SOURCE_PATHS = {
+    "lib64": "lib/libvkbasalt.so",
+    "manifest64": "share/vulkan/implicit_layer.d/vkBasalt.aarch64.json",
+    "license": "share/doc/vkbasalt/LICENSE",
+    "reshade_license": "share/doc/vkbasalt/RESHade-LICENSE.md",
+    "source": "share/doc/vkbasalt/SOURCE",
+    "checksums": "SHA256SUMS",
+}
+# ELF e_machine values for each payload slot; an archive for the wrong ISA must
+# never be staged even when its ELF class (32/64-bit) happens to match.
+ELF_MACHINES = {"x86_64": 62, "i386": 3, "aarch64": 183}
 LAYER_NAME = "VK_LAYER_VKBASALT_post_processing"
 ENABLE_ENVIRONMENT = {"ENABLE_VKBASALT": "1"}
 DISABLE_ENVIRONMENT = {"DISABLE_VKBASALT": "1"}
@@ -137,20 +151,23 @@ def _obtain_archive(pin: dict[str, Any], cache_dir: Path) -> Path:
     return archive
 
 
-def _archive_members(archive_path: Path) -> dict[str, bytes]:
+def _archive_members(
+        archive_path: Path,
+        source_paths: dict[str, str] = SOURCE_PATHS,
+) -> dict[str, bytes]:
     members: dict[str, bytes] = {}
     with tarfile.open(archive_path, "r:xz") as archive:
         for member in archive.getmembers():
             if not member.isfile():
                 continue
             normalized = str(PurePosixPath(member.name.removeprefix("./")))
-            if normalized not in SOURCE_PATHS.values() and normalized not in OPTIONAL_SOURCE_PATHS:
+            if normalized not in source_paths.values() and normalized not in OPTIONAL_SOURCE_PATHS:
                 continue
             source = archive.extractfile(member)
             if source is None:
                 raise ValueError(f"could not read vkBasalt archive member {normalized}")
             members[normalized] = source.read()
-    missing = sorted(set(SOURCE_PATHS.values()) - set(members))
+    missing = sorted(set(source_paths.values()) - set(members))
     if missing:
         raise ValueError("vkBasalt archive is missing: " + ", ".join(missing))
     return members
@@ -167,6 +184,118 @@ def _validate_live_reload_markers(key: str, binary: bytes) -> None:
             f"vkBasalt {key} library is missing MAKO live reload markers: "
             + ", ".join(missing_live_markers)
         )
+
+
+def _elf_machine(binary: bytes) -> int | None:
+    """Return the ELF e_machine of a little-endian ELF image."""
+    if len(binary) < 20 or binary[:4] != b"\x7fELF" or binary[5] != 1:
+        return None
+    return int.from_bytes(binary[18:20], "little")
+
+
+def _validate_elf(key: str, binary: bytes, elf_class: int, machine: str) -> None:
+    if len(binary) < 5 or binary[:4] != b"\x7fELF" or binary[4] != elf_class:
+        raise ValueError(f"vkBasalt {key} library has the wrong ELF class")
+    if _elf_machine(binary) != ELF_MACHINES[machine]:
+        raise ValueError(f"vkBasalt {key} binary is not built for {machine}")
+
+
+def _validate_checksums(members: dict[str, bytes], source_paths: dict[str, str]) -> None:
+    checksum_lines = members[source_paths["checksums"]].decode("utf-8").splitlines()
+    checksums: dict[str, str] = {}
+    for line in checksum_lines:
+        checksum, separator, name = line.partition("  ")
+        if separator and SHA256_PATTERN.fullmatch(checksum):
+            checksums[str(PurePosixPath(name.removeprefix("./")))] = checksum
+    for key, member_path in source_paths.items():
+        if key == "checksums":
+            continue
+        if checksums.get(member_path) != hashlib.sha256(members[member_path]).hexdigest():
+            raise ValueError(f"vkBasalt internal checksum failed for {member_path}")
+    for member_path in OPTIONAL_SOURCE_PATHS.intersection(members):
+        if checksums.get(member_path) != hashlib.sha256(members[member_path]).hexdigest():
+            raise ValueError(f"vkBasalt internal checksum failed for {member_path}")
+
+
+def _validate_manifest(pin: dict[str, Any], key: str, content: bytes, architecture: str) -> None:
+    manifest = json.loads(content)
+    layer = manifest.get("layer", {})
+    if (
+        layer.get("name") != LAYER_NAME
+        or layer.get("type") != "GLOBAL"
+        or layer.get("api_version") != pin["vulkan_api_version"]
+        or layer.get("library_arch") != architecture
+        or layer.get("enable_environment") != ENABLE_ENVIRONMENT
+        or layer.get("disable_environment") != DISABLE_ENVIRONMENT
+    ):
+        raise ValueError(f"vkBasalt {key} manifest contract is invalid")
+
+
+def _source_record(members: dict[str, bytes], source_paths: dict[str, str]) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in members[source_paths["source"]].decode("utf-8").splitlines()
+        if "=" in line
+    )
+
+
+def _validate_provenance(pin: dict[str, Any], source_lines: dict[str, str]) -> None:
+    if (
+        source_lines.get("repository") != f"https://github.com/{REPOSITORY}"
+        or source_lines.get("tag") != pin["tag"]
+        or source_lines.get("commit") != pin["source_commit"]
+        or source_lines.get("upstream_commit") != pin["upstream_commit"]
+    ):
+        raise ValueError("vkBasalt archive source provenance does not match its pin")
+    for field in ("vulkan_headers_revision", "vulkan_headers_commit", "vulkan_api_version"):
+        if source_lines.get(field) != pin[field]:
+            raise ValueError("vkBasalt archive Vulkan provenance does not match its pin: " + field)
+
+
+def _validate_aarch64_source_archive(
+        pin: dict[str, Any], archive_path: Path,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Validate an AArch64 payload compiled from the pinned fork commit.
+
+    The archive is produced by ``build-vkbasalt-from-source.sh`` in the same
+    build. It has no release checksum of its own, so it is accepted only when
+    its recorded source and Vulkan header provenance equal the reviewed x86
+    pin, every file matches its internal checksum, and every binary is a
+    64-bit AArch64 ELF exporting the MAKO layer contract.
+    """
+    members = _archive_members(archive_path, AARCH64_SOURCE_PATHS)
+    _validate_checksums(members, AARCH64_SOURCE_PATHS)
+    source_lines = _source_record(members, AARCH64_SOURCE_PATHS)
+    _validate_provenance(pin, source_lines)
+    if source_lines.get("architecture") != "aarch64" or source_lines.get("build") != "source":
+        raise ValueError("vkBasalt source archive must declare architecture=aarch64 and build=source")
+    binary = members[AARCH64_SOURCE_PATHS["lib64"]]
+    _validate_elf("lib64", binary, 2, "aarch64")
+    if (
+        b"vkBasalt_GetInstanceProcAddr" not in binary
+        or b"vkBasalt_GetDeviceProcAddr" not in binary
+    ):
+        raise ValueError("vkBasalt lib64 library is missing its layer entrypoints")
+    _validate_live_reload_markers("lib64", binary)
+    if b"makoSetSwapchainColorSpaceV1" not in binary:
+        raise ValueError("vkBasalt lib64 lacks the HDR colour-space handoff")
+    _validate_manifest(pin, "manifest64", members[AARCH64_SOURCE_PATHS["manifest64"]], "64")
+    if "bin/mako-shader-tool" in members:
+        _validate_elf("shader tool", members["bin/mako-shader-tool"], 2, "aarch64")
+        if b"makoShader_" not in binary:
+            raise ValueError("vkBasalt shader tool requires matching parameter support in the layer")
+    staged_pin = dict(pin)
+    staged_pin.update({
+        "build_kind": "source",
+        "host_architecture": "aarch64",
+        "asset": archive_path.name,
+        "url": None,
+        "sha256": _sha256(archive_path),
+    })
+    # Stage through the canonical member names used by the x86 payload.
+    canonical = dict(members)
+    canonical[SOURCE_PATHS["manifest64"]] = members[AARCH64_SOURCE_PATHS["manifest64"]]
+    return staged_pin, canonical
 
 
 def _validate_archive(pin: dict[str, Any], archive_path: Path) -> dict[str, bytes]:
@@ -193,14 +322,12 @@ def _validate_archive(pin: dict[str, Any], archive_path: Path) -> dict[str, byte
         binary = members[member_path]
         if checksums.get(member_path) != hashlib.sha256(binary).hexdigest():
             raise ValueError(f"vkBasalt internal checksum failed for {member_path}")
-        if not binary.startswith(b"\x7fELF\x02"):
-            raise ValueError("vkBasalt shader tool has the wrong ELF class")
+        _validate_elf("shader tool", binary, 2, "x86_64")
         if any(b"makoShader_" not in members[SOURCE_PATHS[key]] for key in ("lib64", "lib32")):
             raise ValueError("vkBasalt shader tool requires matching parameter support in both layers")
-    for key, elf_class in (("lib64", 2), ("lib32", 1)):
+    for key, elf_class, machine in (("lib64", 2, "x86_64"), ("lib32", 1, "i386")):
         binary = members[SOURCE_PATHS[key]]
-        if len(binary) < 5 or binary[:4] != b"\x7fELF" or binary[4] != elf_class:
-            raise ValueError(f"vkBasalt {key} library has the wrong ELF class")
+        _validate_elf(key, binary, elf_class, machine)
         if (
             b"vkBasalt_GetInstanceProcAddr" not in binary
             or b"vkBasalt_GetDeviceProcAddr" not in binary
@@ -434,12 +561,22 @@ def main() -> int:
     parser.add_argument("--prepare-local-flatpak", type=Path, help="Create ignored Flatpak manifests using --local-archive")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--64-bit-only", action="store_true")
+    parser.add_argument(
+        "--aarch64-source-archive",
+        type=Path,
+        help="Stage an AArch64 payload built from the pinned source by build-vkbasalt-from-source.sh",
+    )
     parser.add_argument("--generate-flatpak-module", type=Path)
     parser.add_argument("--check-flatpak-module", type=Path)
     args = parser.parse_args()
 
     if args.local_archive and (args.update_from_archive or args.generate_flatpak_module or args.check_flatpak_module):
         parser.error("local candidates cannot update or replace release metadata")
+    if args.aarch64_source_archive and (
+            args.local_archive or args.archive or args.update_from_archive
+            or args.generate_flatpak_module or args.check_flatpak_module
+            or not args.stage_native):
+        parser.error("--aarch64-source-archive is only valid with --stage-native")
     if args.prepare_local_flatpak:
         if not args.local_archive:
             parser.error("--prepare-local-flatpak requires --local-archive")
@@ -474,7 +611,11 @@ def main() -> int:
                 raise ValueError(f"generated Flatpak vkBasalt manifest is stale: {manifest}")
     if args.stage_native:
         cache_dir = args.cache_dir or args.pin.parent / "build/cache/vkbasalt"
-        if args.local_archive:
+        include_32 = not getattr(args, "64_bit_only")
+        if args.aarch64_source_archive:
+            pin, members = _validate_aarch64_source_archive(pin, args.aarch64_source_archive)
+            include_32 = False
+        elif args.local_archive:
             pin, members = _local_candidate(args.local_archive)
         else:
             archive = args.archive or _obtain_archive(pin, cache_dir)
@@ -483,7 +624,7 @@ def main() -> int:
             pin,
             members,
             args.stage_native,
-            not getattr(args, "64_bit_only"),
+            include_32,
         )
     if not any((
         args.check,
@@ -493,7 +634,11 @@ def main() -> int:
         args.check_flatpak_module,
     )):
         parser.error("select --check, --stage-native, or a Flatpak module operation")
-    kind = "local candidate" if args.local_archive else "pin"
+    kind = (
+        "AArch64 source build" if args.aarch64_source_archive
+        else "local candidate" if args.local_archive
+        else "pin"
+    )
     print(f"vkBasalt {kind} is current: {pin['tag']} ({pin['sha256']})")
     return 0
 

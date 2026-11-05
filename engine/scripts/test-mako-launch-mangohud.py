@@ -4,11 +4,18 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 LAUNCHER = Path(__file__).with_name("mako-launch")
+# The launcher admits MangoHud manifests for its recorded package architecture
+# only when it runs on that same ISA. Exercise the host's own package shape.
+HOST_ARCH = "aarch64" if platform.machine() in ("aarch64", "arm64") else "x86_64"
+SUFFIXES = {"64": HOST_ARCH, "32": "x86"}
+BITS = ("64", "32") if HOST_ARCH == "x86_64" else ("64",)
 
 
 class MangoHudLauncherTests(unittest.TestCase):
@@ -29,9 +36,15 @@ class MangoHudLauncherTests(unittest.TestCase):
         self.private = self.root / "cache/mako-render/mangohud"
         self.shared = Path(self.environment["XDG_CONFIG_HOME"]) / "mako-render/mangohud.conf"
         self.shared.parent.mkdir(parents=True)
+        self.launcher = self.root / "prefix/bin/mako-launch"
+        self.launcher.parent.mkdir(parents=True)
+        shutil.copy(LAUNCHER, self.launcher)
+        self.record = self.root / "prefix/share/mako-render/host-architecture"
+        self.record.parent.mkdir(parents=True)
+        self.record.write_text(HOST_ARCH + "\n")
 
     def manifest(self, bits="64", **updates):
-        suffix = "x86_64" if bits == "64" else "x86"
+        suffix = SUFFIXES[bits]
         library = self.root / ("libMangoHud" + bits + ".so")
         library.write_bytes(b"synthetic library; never loaded")
         layer = {
@@ -47,7 +60,7 @@ class MangoHudLauncherTests(unittest.TestCase):
 
     def run_launcher(self, *args, **environment):
         return subprocess.run(
-            ["bash", str(LAUNCHER), *args],
+            ["bash", str(self.launcher), *args],
             env={**self.environment, **environment},
             text=True, capture_output=True, timeout=10, cwd=self.root,
         )
@@ -67,7 +80,7 @@ class MangoHudLauncherTests(unittest.TestCase):
         self.assertFalse(self.shared.exists())
 
     def test_native_order_and_configuration_precedence_for_both_architectures(self):
-        for bits in ("64", "32"):
+        for bits in BITS:
             with self.subTest(bits=bits):
                 for path in self.manifests.iterdir():
                     path.unlink()
@@ -76,7 +89,7 @@ class MangoHudLauncherTests(unittest.TestCase):
                 for inherited in ("", "/run/gamescope/mangohud.conf", "/custom.conf"):
                     env = self.game(MANGOHUD="1", MANGOHUD_CONFIGFILE=inherited,
                                     MANGOHUD_CONFIG="read_cfg,fps", DISABLE_MANGOHUD="1",
-                                    VK_INSTANCE_LAYERS="VK_LAYER_MANGOHUD_overlay_x86:VK_LAYER_TEST:VK_LAYER_MANGOHUD_overlay_x86_64:VK_LAYER_MAKO_render")
+                                    VK_INSTANCE_LAYERS="VK_LAYER_MANGOHUD_overlay_x86:VK_LAYER_TEST:VK_LAYER_MANGOHUD_overlay_" + HOST_ARCH + ":VK_LAYER_MAKO_render")
                     self.assertEqual(env["MANGOHUD_CONFIGFILE"], str(self.shared))
                     self.assertEqual(env["MANGOHUD_CONFIG"], "read_cfg,fps")
                     self.assertEqual(env["MANGOHUD"], "1")
@@ -84,7 +97,7 @@ class MangoHudLauncherTests(unittest.TestCase):
                     self.assertTrue(env["VK_IMPLICIT_LAYER_PATH"].endswith(":" + str(self.private)))
                     self.assertNotIn(str(self.manifests), env["VK_IMPLICIT_LAYER_PATH"])
                     if bits == "64":
-                        self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_MAKO_render:VK_LAYER_MANGOHUD_overlay_x86_64:VK_LAYER_TEST")
+                        self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_MAKO_render:VK_LAYER_MANGOHUD_overlay_" + HOST_ARCH + ":VK_LAYER_TEST")
                     else:
                         self.assertNotIn("MANGOHUD", env["VK_INSTANCE_LAYERS"])
                 staged = list(self.private.glob("*.json"))
@@ -176,19 +189,60 @@ class MangoHudLauncherTests(unittest.TestCase):
     def test_unmodified_manifests_are_not_rewritten(self):
         self.manifest()
         self.game(MANGOHUD="1")
-        path = self.private / "MangoHud.x86_64.json"
+        path = self.private / ("MangoHud." + HOST_ARCH + ".json")
         before = path.stat().st_mtime_ns
         self.game(MANGOHUD="1")
         self.assertEqual(before, path.stat().st_mtime_ns)
 
     def test_concurrent_launches_share_a_complete_manifest_directory(self):
-        self.manifest("64")
-        self.manifest("32")
+        for bits in BITS:
+            self.manifest(bits)
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: self.game(MANGOHUD="1"), range(12)))
         for result in results:
             self.assertEqual(result.get("MANGOHUD"), "1")
-        self.assertEqual(len(list(self.private.iterdir())), 2)
+        self.assertEqual(len(list(self.private.iterdir())), len(BITS))
+
+    def test_foreign_architecture_package_never_admits_mangohud(self):
+        # A package built for the other ISA (for example an x86_64 payload
+        # run through FEX on an ARM host, or the reverse) must not stage a
+        # MangoHud manifest for a process ABI it was not built for.
+        foreign = "x86_64" if HOST_ARCH == "aarch64" else "aarch64"
+        self.record.write_text(foreign + "\n")
+        library = self.root / "libMangoHudForeign.so"
+        library.write_bytes(b"synthetic library; never loaded")
+        (self.manifests / ("MangoHud." + foreign + ".json")).write_text(json.dumps({
+            "file_format_version": "1.0.0",
+            "layer": {
+                "name": "VK_LAYER_MANGOHUD_overlay_" + foreign,
+                "type": "GLOBAL", "library_path": str(library),
+                "enable_environment": {"MANGOHUD": "1"},
+                "disable_environment": {"DISABLE_MANGOHUD": "1"},
+            },
+        }))
+        self.assertEqual(json.loads(self.run_launcher("--check-mangohud").stdout), {"available": False})
+        self.assertNotIn("MANGOHUD", self.game(MANGOHUD="1"))
+        self.assertFalse(self.private.exists())
+
+    def test_aarch64_package_ignores_x86_manifests(self):
+        if HOST_ARCH != "aarch64":
+            self.skipTest("requires an AArch64 host")
+        self.manifest("64")
+        library = self.root / "libMangoHudX86.so"
+        library.write_bytes(b"synthetic library; never loaded")
+        for suffix, arch in (("x86_64", "64"), ("x86", "32")):
+            (self.manifests / ("MangoHud." + suffix + ".json")).write_text(json.dumps({
+                "file_format_version": "1.0.0",
+                "layer": {
+                    "name": "VK_LAYER_MANGOHUD_overlay_" + suffix,
+                    "type": "GLOBAL", "library_path": str(library),
+                    "library_arch": arch,
+                    "enable_environment": {"MANGOHUD": "1"},
+                    "disable_environment": {"DISABLE_MANGOHUD": "1"},
+                },
+            }))
+        self.game(MANGOHUD="1")
+        self.assertEqual(sorted(path.name for path in self.private.iterdir()), ["MangoHud.aarch64.json"])
 
     def test_invalid_requests_and_shader_conflict_fail_before_game_exec(self):
         for options in ({"MANGOHUD": "yes"}, {"MANGOHUD": "1", "ENABLE_VKBASALT": "1"}):

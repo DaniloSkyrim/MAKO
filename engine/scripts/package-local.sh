@@ -19,23 +19,42 @@ if [[ -n "$local_vkbasalt_archive" ]]; then
     fi
 fi
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
-default_output="$repo_root/out/MAKO-Renderer-v$version-linux.tar.xz"
 output_path=""
 build_32_bit=true
+host_arch=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/package-local.sh [--64-bit-only] [output-path]
+Usage: scripts/package-local.sh [--64-bit-only] [--host-arch x86_64|aarch64] [output-path]
 
 Build and verify a local Linux engine archive. --64-bit-only omits the 32-bit
 layer and manifest for faster native 64-bit Deck/Steam Machine test builds.
+--host-arch selects the package architecture. Native Linux builds must match
+`uname -m`; containerized builds select the matching linux/amd64 or
+linux/arm64 builder. AArch64 packages are always 64-bit only and compile the
+pinned vkBasalt fork from source.
 EOF
+}
+
+normalize_host_arch() {
+    case "$1" in
+        x86_64|amd64) printf 'x86_64' ;;
+        aarch64|arm64) printf 'aarch64' ;;
+        *) return 1 ;;
+    esac
 }
 
 while (($#)); do
     case "$1" in
         --64-bit-only)
             build_32_bit=false
+            ;;
+        --host-arch)
+            if (($# < 2)) || ! host_arch="$(normalize_host_arch "$2")"; then
+                echo "--host-arch must be x86_64 or aarch64" >&2
+                exit 2
+            fi
+            shift
             ;;
         -h|--help)
             usage
@@ -56,6 +75,35 @@ while (($#)); do
     esac
     shift
 done
+
+containerized_build="${MAKO_PACKAGE_CONTAINERIZED:-0}"
+if [[ -z "$host_arch" ]]; then
+    if [[ "$(uname -s)" == "Linux" ]] && host_arch="$(normalize_host_arch "$(uname -m)")"; then
+        :
+    else
+        host_arch=x86_64
+    fi
+fi
+if [[ "$(uname -s)" == "Linux" && ( "$containerized_build" == "1" || "${MAKO_PORTABLE_PACKAGE:-0}" != "1" ) ]]; then
+    native_arch="$(normalize_host_arch "$(uname -m)" || uname -m)"
+    if [[ "$native_arch" != "$host_arch" ]]; then
+        echo "Native packaging builds for $native_arch, but --host-arch is $host_arch." >&2
+        echo "Cross-compiled Vulkan layers are not packaged; set MAKO_PORTABLE_PACKAGE=1 to use a $host_arch container." >&2
+        exit 1
+    fi
+fi
+if [[ "$host_arch" == aarch64 ]]; then
+    # AArch64 Vulkan applications are 64-bit only: Steam's ARM Proton runs
+    # wine-arm64, and x86 Linux games reach the host loader through FEX thunks.
+    build_32_bit=false
+    if [[ -n "$local_vkbasalt_archive" ]]; then
+        echo "MAKO_VKBASALT_LOCAL_ARCHIVE is an x86 release candidate; AArch64 builds compile vkBasalt from its pinned source." >&2
+        exit 1
+    fi
+    default_output="$repo_root/out/MAKO-Renderer-v$version-linux-aarch64.tar.xz"
+else
+    default_output="$repo_root/out/MAKO-Renderer-v$version-linux.tar.xz"
+fi
 output_path="${output_path:-$default_output}"
 
 if [[ "$output_path" != /* ]]; then
@@ -74,7 +122,6 @@ if [[ ! "$vulkan_headers_revision" =~ ^(vulkan-sdk-|v)[0-9]+\.[0-9]+\.[0-9]+$ ]]
 fi
 
 portable_container="${MAKO_PORTABLE_PACKAGE:-0}"
-containerized_build="${MAKO_PACKAGE_CONTAINERIZED:-0}"
 if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_container" == "1" ) ]]; then
     container_runtime=""
     if command -v docker >/dev/null 2>&1; then
@@ -96,13 +143,24 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
             ;;
     esac
 
-    echo "Using local linux/amd64 $container_runtime packaging environment..."
+    if [[ "$host_arch" == aarch64 ]]; then
+        container_platform=linux/arm64
+        # vkBasalt is compiled from its pinned source on AArch64; the x86
+        # builder instead downloads the verified release asset.
+        container_toolchain="gcc g++ meson glslang-tools libx11-dev spirv-headers xz-utils"
+    else
+        container_platform=linux/amd64
+        container_toolchain="g++-multilib"
+    fi
+    echo "Using local $container_platform $container_runtime packaging environment..."
     docker_64_only=0
     if [[ "$build_32_bit" == false ]]; then
         docker_64_only=1
     fi
-    exec "$container_runtime" run --rm --platform linux/amd64 \
+    exec "$container_runtime" run --rm --platform "$container_platform" \
         -e MAKO_PACKAGE_64_ONLY="$docker_64_only" \
+        -e MAKO_PACKAGE_HOST_ARCH="$host_arch" \
+        -e MAKO_PACKAGE_TOOLCHAIN="$container_toolchain" \
         -e MAKO_PACKAGE_CONTAINERIZED=1 \
         -e MAKO_VULKAN_HEADERS_REVISION="$vulkan_headers_revision" \
         -e MAKO_RELEASE_SKIP_TESTS="${MAKO_RELEASE_SKIP_TESTS:-0}" \
@@ -123,7 +181,7 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
             fi
             apt-get update -qq
             apt-get install -y -qq \
-                git curl nodejs python3 llvm clang cmake ninja-build pkg-config g++-multilib \
+                git curl nodejs python3 llvm clang cmake ninja-build pkg-config $MAKO_PACKAGE_TOOLCHAIN \
                 libvulkan-dev mesa-common-dev \
                 qt6-base-dev qt6-base-dev-tools \
                 qt6-tools-dev qt6-tools-dev-tools \
@@ -135,7 +193,7 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
                 https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh
             rm -rf /usr/include/vulkan /usr/include/vk_video
             cp -a /tmp/vkh/include/vulkan /tmp/vkh/include/vk_video /usr/include/
-            package_args=()
+            package_args=(--host-arch "$MAKO_PACKAGE_HOST_ARCH")
             if [[ "${MAKO_PACKAGE_64_ONLY:-0}" == "1" ]]; then
                 package_args+=(--64-bit-only)
             fi
@@ -333,7 +391,19 @@ vkbasalt_stage_args=(
 if [[ "$build_32_bit" == false ]]; then
     vkbasalt_stage_args+=(--64-bit-only)
 fi
-if [[ -n "$local_vkbasalt_archive" ]]; then
+if [[ "$host_arch" == aarch64 ]]; then
+    # Compile the exact pinned fork commit once per commit and reuse it. The
+    # cached archive is revalidated against the pin on every staging run.
+    vkbasalt_source_commit="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
+        "$repo_root/vkbasalt-release.json")"
+    vkbasalt_source_cache="$build_cache_root/vkbasalt-aarch64/$vkbasalt_source_commit"
+    vkbasalt_source_archive="$(find "$vkbasalt_source_cache" -maxdepth 1 -name 'vkBasalt-*-linux-aarch64.tar.xz' -print -quit 2>/dev/null || true)"
+    if [[ -z "$vkbasalt_source_archive" ]]; then
+        bash "$repo_root/scripts/build-vkbasalt-from-source.sh" --output "$vkbasalt_source_cache"
+        vkbasalt_source_archive="$(find "$vkbasalt_source_cache" -maxdepth 1 -name 'vkBasalt-*-linux-aarch64.tar.xz' -print -quit)"
+    fi
+    vkbasalt_stage_args+=(--aarch64-source-archive "$vkbasalt_source_archive")
+elif [[ -n "$local_vkbasalt_archive" ]]; then
     vkbasalt_stage_args+=(--local-archive "$monorepo_root/$local_vkbasalt_archive")
 fi
 python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
@@ -345,7 +415,7 @@ required_paths=(
     "bin/mako-installer" \
     "bin/mako-launch" \
     "bin/mako-remote-play" \
-    "share/mako-render/mako_remote_play/libmako-remote-play-sdr.so" \
+    "share/mako-render/host-architecture" \
     "share/mako-render/mako_remote_play/__init__.py" \
     "share/mako-render/mako_remote_play/remote_play_core.py" \
     "share/mako-render/mako_remote_play/remote_play_launch.py" \
@@ -376,6 +446,14 @@ required_paths=(
     "share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.json" \
     "share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
 )
+if [[ "$host_arch" == x86_64 ]]; then
+    # The native Remote Play helper hooks Steam's x86_64 streaming client; the
+    # AArch64 package keeps the command, which reports the feature unsupported.
+    required_paths+=("share/mako-render/mako_remote_play/libmako-remote-play-sdr.so")
+elif [[ -e "$install_dir/share/mako-render/mako_remote_play/libmako-remote-play-sdr.so" ]]; then
+    echo "Packaging failed: the x86_64-only Remote Play helper was built for $host_arch" >&2
+    exit 1
+fi
 if [[ "$build_32_bit" == true ]]; then
     required_paths+=(
         "lib32/libmako-render.so"
@@ -466,6 +544,37 @@ if [[ "$build_32_bit" == true ]]; then
     verify_elf_class "$install_dir/lib32/libmako-render-scaling.so" 1
     verify_elf_class "$install_dir/lib32/vkbasalt/libvkbasalt.so" 1
 fi
+
+# Every ELF in the payload must target the package architecture: 64-bit files
+# use the host ISA, and 32-bit files (x86_64 packages only) use i386.
+case "$host_arch" in
+    x86_64) expected_machine64=62 ;;
+    aarch64) expected_machine64=183 ;;
+esac
+recorded_host_arch="$(tr -d '[:space:]' < "$install_dir/share/mako-render/host-architecture")"
+if [[ "$recorded_host_arch" != "$host_arch" ]]; then
+    echo "Packaging failed: payload records host architecture $recorded_host_arch, expected $host_arch" >&2
+    exit 1
+fi
+while IFS= read -r -d '' payload_file; do
+    if [[ "$(od -An -c -N 4 "$payload_file" | tr -d '[:space:]')" != '177ELF' ]]; then
+        continue
+    fi
+    elf_class="$(od -An -t u1 -j 4 -N 1 "$payload_file" | tr -d '[:space:]')"
+    elf_machine="$(od -An -t u2 -j 18 -N 2 --endian=little "$payload_file" | tr -d '[:space:]')"
+    expected_machine="$expected_machine64"
+    if [[ "$elf_class" == 1 ]]; then
+        if [[ "$host_arch" != x86_64 ]]; then
+            echo "Packaging failed: 32-bit ELF $payload_file in a $host_arch package" >&2
+            exit 1
+        fi
+        expected_machine=3
+    fi
+    if [[ "$elf_machine" != "$expected_machine" ]]; then
+        echo "Packaging failed: $payload_file has ELF machine $elf_machine, expected $expected_machine" >&2
+        exit 1
+    fi
+done < <(find "$install_dir" -type f -print0)
 for vkbasalt_library in "$install_dir/lib/vkbasalt/libvkbasalt.so"; do
     if ! strings "$vkbasalt_library" |
             grep -Fx "vkBasalt_GetInstanceProcAddr" >/dev/null ||
@@ -639,4 +748,5 @@ tar -C "$install_dir" -cJf "$output_path" .
 
 echo "Created and verified: $output_path"
 echo "Version: $version"
+echo "Host architecture: $host_arch"
 echo "Architectures: $([[ "$build_32_bit" == true ]] && printf '64,32' || printf '64')"

@@ -272,7 +272,7 @@ class FlatpakRuntimeDetectionTests(unittest.TestCase):
         self.assertFalse(extension["success"])
         self.assertFalse(override["success"])
         self.assertFalse(refresh["success"])
-        self.assertIn("native AArch64/Armada", extension["error"])
+        self.assertIn("native AArch64 hosts, including Armada and DroidDeck", extension["error"])
 
     def test_26_08_install_update_and_uninstall_select_matching_payload(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -4,6 +4,7 @@
 #include "dxbc_translation_abi.hpp"
 #include "spirv_image_format.hpp"
 #include "mako-common/helpers/errors.hpp"
+#include "mako-common/helpers/target_abi.hpp"
 
 #include <algorithm>
 #include <array>
@@ -91,17 +92,26 @@ namespace {
             std::vector<std::filesystem::path>& candidates,
             const std::filesystem::path& shaderDllPath) {
         const auto common = shaderDllPath.parent_path().parent_path();
+        // Steam publishes the AArch64 platform runtime as a separate tool
+        // (`SteamLinuxRuntime_4-arm64`) beside the x86 one. Each candidate is
+        // only used when it contains this build's multiarch directory, so a
+        // runtime for another ABI is skipped rather than loaded.
+#if defined(__aarch64__)
+        constexpr std::array runtimeNames{
+            "SteamLinuxRuntime_4-arm64",
+            "SteamLinuxRuntime_4",
+            "SteamLinuxRuntime_sniper",
+            "SteamLinuxRuntime",
+        };
+#else
         constexpr std::array runtimeNames{
             "SteamLinuxRuntime_4",
             "SteamLinuxRuntime_sniper",
             "SteamLinuxRuntime_soldier",
             "SteamLinuxRuntime",
         };
-#if INTPTR_MAX == INT64_MAX
-        constexpr std::string_view architecture = "x86_64-linux-gnu";
-#else
-        constexpr std::string_view architecture = "i386-linux-gnu";
 #endif
+        constexpr std::string_view architecture = mako::abi::target.multiarchTuple;
 
         std::error_code error;
         for (const auto* runtimeName : runtimeNames) {
