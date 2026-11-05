@@ -127,7 +127,9 @@ jobs:
   renderer-sanitizers:
     name: MAKO Renderer (aarch64, ASan + UBSan)
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # ASan on the hosted arm64 runner is far slower than on x86_64: the
+    # presentation-policy and adaptive-scheduler suites alone take ~15 minutes.
+    timeout-minutes: 50
     env:
       CC: gcc
       CXX: g++
