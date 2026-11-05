@@ -218,7 +218,7 @@ namespace {
         command.end(vk);
         command.submit(
             vk, {}, VK_NULL_HANDLE, 0,
-            {}, sync.handle(), signalValue
+            {}, sync.signalHandle(), signalValue
         );
         return command;
     }

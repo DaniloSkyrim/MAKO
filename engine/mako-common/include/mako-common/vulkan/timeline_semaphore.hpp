@@ -20,6 +20,14 @@ namespace vk {
         /// Import consumes the descriptor on success and failure.
         /// @param importFd optional file descriptor to import from
         /// @param exportFd optional file descriptor to export to
+        ///
+        /// When the device cannot export timeline semaphores, an exporting
+        /// semaphore becomes one endpoint of a process-local vk::TimelineRelay
+        /// and exports that relay's descriptor instead; importing that
+        /// descriptor on another device opens the second endpoint. Each relayed
+        /// endpoint has separate producer and view semaphores: submissions
+        /// signal signalHandle() and wait on handle(). For an ordinary
+        /// semaphore both are the same handle.
         /// @throws ls::vulkan_error on failure
         TimelineSemaphore(const vk::Vulkan& vk, uint32_t initial,
             std::optional<int> importFd = std::nullopt,
@@ -40,10 +48,20 @@ namespace vk {
         [[nodiscard]] bool wait(const vk::Vulkan& vk,
             uint64_t value, uint64_t timeout = UINT64_MAX) const;
 
-        /// get the underlying VkSemaphore handle
+        /// get the VkSemaphore handle that submissions wait on
         /// @return the VkSemaphore handle
         [[nodiscard]] const auto& handle() const { return *this->semaphore; }
+
+        /// get the VkSemaphore handle that submissions signal
+        /// @return the producer handle of a relayed endpoint, otherwise handle()
+        [[nodiscard]] const VkSemaphore& signalHandle() const {
+            return this->producer != VK_NULL_HANDLE ? this->producer : *this->semaphore;
+        }
+
+        /// whether this endpoint synchronizes through a process-local relay
+        [[nodiscard]] bool relayed() const { return this->producer != VK_NULL_HANDLE; }
     private:
         ls::owned_ptr<VkSemaphore> semaphore;
+        VkSemaphore producer{VK_NULL_HANDLE};
     };
 }

@@ -1195,7 +1195,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
         vk::CommandBuffer::submitCommands(this->ctx.vk, commands,
             {}, this->syncSemaphore.handle(), this->idx,
-            {}, this->syncSemaphore.handle(), this->idx + 1, this->cmdbufFence.handle());
+            {}, this->syncSemaphore.signalHandle(), this->idx + 1, this->cmdbufFence.handle());
         if (this->profiling) {
             this->profiling->timings.cpuPrepassSubmitUs = 0.0;
             this->profiling->timings.cpuGenerationSubmitUs = profileMicroseconds(start);
@@ -1210,7 +1210,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
             vk::CommandBuffer::submitCommands(this->ctx.vk,
                 std::span{commands}.first(i == generatedFrameCount - 1 ? 2 : 1),
                 {}, this->prepassSemaphore.handle(), this->idx - 1,
-                {}, this->syncSemaphore.handle(), this->idx + i,
+                {}, this->syncSemaphore.signalHandle(), this->idx + i,
                 i == generatedFrameCount - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE);
         }
         if (this->profiling)

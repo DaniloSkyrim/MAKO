@@ -34,6 +34,9 @@ namespace vk {
         PFN_vkGetPhysicalDeviceMemoryProperties2 GetPhysicalDeviceMemoryProperties2;
         PFN_vkCreateDevice CreateDevice;
         PFN_vkGetDeviceProcAddr GetDeviceProcAddr;
+        /// Optional (null when unavailable): reports whether timeline
+        /// semaphores can be exported for cross-device frame-generation sync.
+        PFN_vkGetPhysicalDeviceExternalSemaphoreProperties GetPhysicalDeviceExternalSemaphoreProperties;
 
         // extension functions
         PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR GetPhysicalDeviceSurfaceCapabilitiesKHR;
@@ -123,6 +126,7 @@ namespace vk {
         // extension functions
         PFN_vkSignalSemaphoreKHR SignalSemaphoreKHR;
         PFN_vkWaitSemaphoresKHR WaitSemaphoresKHR;
+        PFN_vkGetSemaphoreCounterValueKHR GetSemaphoreCounterValueKHR;
         PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
         PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
         PFN_vkGetSemaphoreFdKHR GetSemaphoreFdKHR;

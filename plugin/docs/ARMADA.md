@@ -17,6 +17,7 @@ AArch64 Vulkan clients are 64-bit only: Steam's ARM Proton runs games through wi
 | Armada, with any package | The root-owned `device-env` marker identifies the host. Installation is disabled, and the wrapper hands games to `armada-game-launch` exactly once without MAKO. |
 | AArch64 host with an x86_64 package, or x86_64 host with an AArch64 package | Installation is disabled with a message naming the package to install. The wrapper never exposes the foreign Renderer. |
 | Flatpak launch with an AArch64 Renderer | The wrapper prints a one-line notice and continues without MAKO. Flatpak activation RPCs report the host as unsupported. |
+| Turnip on Android KGSL (DroidDeck), which cannot export timeline semaphores | Frame Generation synchronizes the game and backend devices through the Renderer's process-local timeline relay instead of an exported timeline. Spatial scaling is unaffected. |
 | Native Remote Play with an AArch64 Renderer | The streaming-client override reports that the native x86_64 Steam streaming client is unavailable and changes nothing. |
 | Wrapper generated for another Renderer architecture | Its compatibility marker no longer matches, so startup regenerates it from canonical state before parsing profiles or exporting Vulkan settings. |
 
@@ -84,6 +85,7 @@ DroidDeck tester packages are enabled for real-hardware qualification. Armada re
 - Wrapper regeneration and compatibility migration orchestration: `configuration.py`
 - Flatpak activation and old-override cleanup: `flatpak_service.py`
 - Renderer payload record and ELF checks: `engine/CMakeLists.txt`, `engine/scripts/package-local.sh`, `engine/scripts/mako-installer`
+- Cross-device timeline relay for drivers without exportable timelines: `engine/mako-common/src/vulkan/timeline_semaphore.cpp`, `engine/mako-common/src/vulkan/timeline_relay.cpp`, and the `timeline-relay` CTest
 - Deterministic coverage: `tests/test_dual_arch_installation.py`, `tests/test_wrapper_environment.py`, `tests/test_configuration_boundaries.py`, `tests/test_plugin_lifecycle.py`, `tests/test_flatpak_runtime_detection.py`, and the AArch64 CI workflow
 
 Any future AArch64 change must update this document and those boundary tests. Real-hardware evidence is required before a release can describe the Renderer as supported on an AArch64 host.

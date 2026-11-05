@@ -63,6 +63,7 @@ namespace {
         const std::array interopFunctions{
             "vkSignalSemaphoreKHR",
             "vkWaitSemaphoresKHR",
+            "vkGetSemaphoreCounterValueKHR",
             "vkGetMemoryFdKHR",
             "vkImportSemaphoreFdKHR",
             "vkGetSemaphoreFdKHR",
@@ -75,6 +76,7 @@ namespace {
         );
         expect(!scalingOnly.SignalSemaphoreKHR &&
                 !scalingOnly.WaitSemaphoresKHR &&
+                !scalingOnly.GetSemaphoreCounterValueKHR &&
                 !scalingOnly.GetMemoryFdKHR &&
                 !scalingOnly.ImportSemaphoreFdKHR &&
                 !scalingOnly.GetSemaphoreFdKHR,

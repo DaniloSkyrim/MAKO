@@ -18,6 +18,7 @@ set(COMMON_SOURCES
     "src/vulkan/sampler.cpp"
     "src/vulkan/semaphore.cpp"
     "src/vulkan/shader.cpp"
+    "src/vulkan/timeline_relay.cpp"
     "src/vulkan/timeline_semaphore.cpp"
     "src/vulkan/vulkan.cpp")
 
@@ -113,6 +114,11 @@ if(BUILD_TESTING)
     add_test(NAME command-buffer-submit-storage
         COMMAND mako-command-buffer-submit-storage-tests)
     set_tests_properties(command-buffer-submit-storage PROPERTIES LABELS "portable-policy")
+
+    add_executable(mako-timeline-relay-tests "tests/timeline_relay_tests.cpp")
+    target_link_libraries(mako-timeline-relay-tests PRIVATE mako-common)
+    add_test(NAME timeline-relay COMMAND mako-timeline-relay-tests)
+    set_tests_properties(timeline-relay PROPERTIES LABELS "portable-policy" TIMEOUT 60)
 
     add_executable(mako-image-quality-tests
         "tests/image_quality_tests.cpp")

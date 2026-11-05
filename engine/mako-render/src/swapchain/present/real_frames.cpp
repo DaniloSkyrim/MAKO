@@ -283,7 +283,7 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         pass.commandBuffer.submit(
             invocation.vk,
             invocation.waitSemaphores, VK_NULL_HANDLE, 0,
-            {}, this->syncSemaphore->handle(),
+            {}, this->syncSemaphore->signalHandle(),
             sourceTimelineValue,
             pass.completionFence.handle(), invocation.queue
         );
@@ -336,7 +336,7 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
     this->frameState.sequenceIndex++;
     commandBuffer.submit(invocation.vk,
         invocation.waitSemaphores, VK_NULL_HANDLE, 0,
-        {}, this->syncSemaphore->handle(), sourceTimelineValue
+        {}, this->syncSemaphore->signalHandle(), sourceTimelineValue
     );
     logSlowPresentOperation(
         "submit-source-copy", this->frameState.realFrameIndex,

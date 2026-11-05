@@ -193,7 +193,7 @@ if(BUILD_TESTING)
 
     add_dependencies(mako-portable-policy-test-binaries
         mako-external-fd-tests mako-descriptor-pool-tests mako-shader-pipeline-tests
-        mako-command-buffer-submit-storage-tests)
+        mako-command-buffer-submit-storage-tests mako-timeline-relay-tests)
 
     add_library(mako-launch-preload-fixture SHARED
         "../scripts/test-launch-preload.cpp")

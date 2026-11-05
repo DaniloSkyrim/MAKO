@@ -440,6 +440,11 @@ VulkanInstanceFuncs vk::initVulkanInstanceFuncs(VkInstance i, PFN_vkGetInstanceP
             ),
         .CreateDevice = ipa<PFN_vkCreateDevice>(mpa, i, "vkCreateDevice"),
         .GetDeviceProcAddr = ipa<PFN_vkGetDeviceProcAddr>(mpa, i, "vkGetDeviceProcAddr"),
+        .GetPhysicalDeviceExternalSemaphoreProperties = optionalIpa<
+            PFN_vkGetPhysicalDeviceExternalSemaphoreProperties>(
+                mpa, i, "vkGetPhysicalDeviceExternalSemaphoreProperties",
+                "vkGetPhysicalDeviceExternalSemaphorePropertiesKHR"
+            ),
 
         .GetPhysicalDeviceSurfaceCapabilitiesKHR = graphical ?
             ipa<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(mpa, i,
@@ -533,6 +538,10 @@ VulkanDeviceFuncs vk::initVulkanDeviceFuncs(const VulkanInstanceFuncs& f, VkDevi
             ? dpa<PFN_vkWaitSemaphoresKHR>(f, d, "vkWaitSemaphoresKHR")
             : reinterpret_cast<PFN_vkWaitSemaphoresKHR>(
                 optionalDeviceProc("vkWaitSemaphoresKHR")),
+        .GetSemaphoreCounterValueKHR = frameGenerationInteropEnabled
+            ? dpa<PFN_vkGetSemaphoreCounterValueKHR>(f, d, "vkGetSemaphoreCounterValueKHR")
+            : reinterpret_cast<PFN_vkGetSemaphoreCounterValueKHR>(
+                optionalDeviceProc("vkGetSemaphoreCounterValueKHR")),
         .GetMemoryFdKHR = frameGenerationInteropEnabled
             ? dpa<PFN_vkGetMemoryFdKHR>(f, d, "vkGetMemoryFdKHR")
             : reinterpret_cast<PFN_vkGetMemoryFdKHR>(
