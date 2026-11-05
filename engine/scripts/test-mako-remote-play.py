@@ -15,6 +15,10 @@ ELF = b'\x7fELF\x02\x01' + b'\0' * 12 + b'\x3e\0' + b'test client'
 SYSTEM_PYTHON_SUPPORTED = subprocess.run(
     ['/usr/bin/python3', '-I', '-c', "import tomllib, hashlib; assert hasattr(hashlib, 'file_digest')"],
     capture_output=True, timeout=5).returncode == 0
+# The launch tests run the host's /usr/bin/env as a real streaming client, and
+# Remote Play deliberately accepts only native x86_64 clients (it is unavailable
+# on AArch64 hosts; see plugin/docs/REMOTE-PLAY.md).
+HOST_CLIENT_X86_64 = Path('/usr/bin/env').read_bytes()[18:20] == ELF[18:20]
 
 
 class RemotePlayCommandTests(unittest.TestCase):
@@ -74,6 +78,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertEqual(ELF, self.client.read_bytes())
         self.assertEqual(0o750, self.client.stat().st_mode & 0o7777)
 
+    @unittest.skipUnless(HOST_CLIENT_X86_64, 'Remote Play launches require a native x86_64 host client')
     def test_standalone_shader_launch_and_custom_config_are_used(self):
         self.client.write_bytes(Path('/usr/bin/env').read_bytes())
         config = self.home / 'other config/conf.toml'
@@ -128,6 +133,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertNotIn('result=sRGB', result.stderr.decode())
         self.command('remove')
 
+    @unittest.skipUnless(HOST_CLIENT_X86_64, 'Remote Play launches require a native x86_64 host client')
     def test_real_standalone_launcher_uses_current_shader_settings(self):
         self.client.write_bytes(Path('/usr/bin/env').read_bytes())
         shutil.copyfile(ROOT / 'mako-launch', self.launcher)

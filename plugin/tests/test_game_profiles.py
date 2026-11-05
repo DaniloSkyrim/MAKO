@@ -21,6 +21,7 @@ class _Logger:
 sys.modules.setdefault("decky", SimpleNamespace(logger=_Logger()))
 
 from py_modules.mako_plugin import configuration as configuration_module  # noqa: E402
+from py_modules.mako_plugin import constants as constants_module  # noqa: E402
 from py_modules.mako_plugin import managed_files as managed_files_module  # noqa: E402
 from py_modules.mako_plugin.config_schema import (  # noqa: E402
     ConfigurationManager,
@@ -1339,7 +1340,7 @@ class GameProfileTests(unittest.TestCase):
             self.service.vkbasalt_layer_dir.mkdir()
             (
                 self.service.mangohud_layer_dir /
-                configuration_module.MANGOHUD_MANIFEST_FILENAME_64
+                constants_module.MANGOHUD_MANIFEST_FILENAME_64
             ).write_text("{}", encoding="utf-8")
             (
                 self.service.vkbasalt_layer_dir /

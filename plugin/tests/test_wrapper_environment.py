@@ -67,6 +67,25 @@ class WrapperEnvironmentTests(unittest.TestCase):
             "GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0",
         }
         self.last_stderr = ""
+        # Generated wrappers compare ``uname -m`` with the Renderer ISA. Make
+        # the host match the Renderer under test, so results never depend on
+        # the CI runner's own architecture; guard tests override it.
+        host_bin = tempfile.TemporaryDirectory()
+        self.addCleanup(host_bin.cleanup)
+        self.host_uname = Path(host_bin.name) / "uname"
+        self._write_host_uname(self.service.renderer_architecture)
+        path_patch = patch.dict(
+            os.environ,
+            {"PATH": f"{host_bin.name}{os.pathsep}{os.environ.get('PATH', '')}"},
+        )
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
+
+    def _write_host_uname(self, architecture):
+        self.host_uname.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' '{architecture}'\n", encoding="utf-8"
+        )
+        self.host_uname.chmod(0o755)
 
     def _evaluate(self, extra_environment=None, config=None, *, arguments=(), user=None):
         lines = []
@@ -2200,6 +2219,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
             self.assertEqual(result.stdout, "enable= disable=1\n")
 
     def _use_renderer_architecture(self, architecture):
+        self._write_host_uname(architecture)
         self.service.renderer_architecture = architecture
         self.service._HOST_COMPATIBILITY_MARKER = (
             wrapper_generation_module.host_compatibility_marker(architecture)
