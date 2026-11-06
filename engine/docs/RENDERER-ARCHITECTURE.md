@@ -29,7 +29,7 @@ This map identifies code owners and call boundaries. The behavior contracts rema
 | `mako-render/src/swapchain/present/real_frames.cpp` | Presents native, scaled, and history-only real frames and records source-copy work. |
 | `mako-render/src/swapchain/present/retirement.cpp` | Preserves upstream present fences and retires acquired images after a failed generation path. |
 | `mako-render/src/swapchain/present_timing.hpp` | Bounds Renderer-owned Vulkan timing feedback, calibrates supported clocks, and supplies observed queue readiness to the shared ordered timeline. |
-| `mako-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, and image-barrier helpers. It owns no mutable state or policy. |
+| `mako-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, image-barrier, and relayed-timeline host-wait helpers. It owns no mutable state or policy. |
 
 Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Testing MAKO](../../TESTING.md).
 

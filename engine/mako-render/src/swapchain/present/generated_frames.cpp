@@ -273,6 +273,8 @@ VkResult Swapchain::presentGeneratedFrames(
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(invocation.vk);
             fallbackCommandBuffer.end(invocation.vk);
+            resolveRelayedTimelineWait(invocation.vk, *this->syncSemaphore,
+                finalGeneratedTimelineValue);
             fallbackCommandBuffer.submit(invocation.vk,
                 {}, this->syncSemaphore->handle(),
                 finalGeneratedTimelineValue,
@@ -419,6 +421,8 @@ VkResult Swapchain::presentGeneratedFrames(
 
         commandBuffer.end(invocation.vk);
         const auto generatedSubmitStarted = startPresentDiagnostic();
+        resolveRelayedTimelineWait(invocation.vk, *this->syncSemaphore,
+            this->frameState.backendTimelineIndex);
         commandBuffer.submit(invocation.vk,
             std::span{waitSemaphores}.first(waitSemaphoreCount),
             this->syncSemaphore->handle(),

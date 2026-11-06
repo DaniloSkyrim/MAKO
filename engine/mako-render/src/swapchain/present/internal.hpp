@@ -3,6 +3,8 @@
 #pragma once
 
 #include "mako-common/vulkan/external_image.hpp"
+#include "mako-common/vulkan/timeline_semaphore.hpp"
+#include "mako-common/vulkan/vulkan.hpp"
 
 #include "present_diagnostics.hpp"
 
@@ -35,6 +37,33 @@ namespace mako::layer::present_detail {
         if (!presentDiagnosticsEnabled())
             return {};
         return DiagnosticsClock::now() - started;
+    }
+
+    /// Upper bound for resolving a relayed timeline wait on the host. It is
+    /// far above one backend dispatch, so reaching it indicates a stall.
+    inline constexpr uint64_t relayedTimelineHostWaitNs = 100'000'000;
+
+    /// Resolve a wait on a relayed shared timeline before submitting work
+    /// whose binary signal a present consumes.
+    ///
+    /// Relayed views advance from the host. Drivers that emulate timeline
+    /// semaphores, such as Turnip on Android KGSL, hold a submission with an
+    /// unresolved wait in a deferred queue. A present that waits on that
+    /// submission's binary semaphore can then reach the compositor before the
+    /// copy executes, and without implicit dma-buf synchronization the
+    /// compositor shows the image's previous contents. After the host wait the
+    /// driver submits immediately, so presents only depend on real GPU work.
+    /// Exported timelines are unaffected and keep the device-side wait alone.
+    /// A timeout keeps that device-side wait and is reported, never dropped.
+    inline void resolveRelayedTimelineWait(const vk::Vulkan& vk,
+            const vk::TimelineSemaphore& sync, const uint64_t value) {
+        if (!sync.relayed() ||
+                sync.wait(vk, value, relayedTimelineHostWaitNs))
+            return;
+        std::cerr << "MAKO Renderer: frame-generation synchronization: "
+                     "transport=timeline-relay; operation=host-resolve; "
+                     "result=timeout; value=" << value
+                  << "; action=device-wait\n";
     }
 
     struct PresentPhaseDurations {

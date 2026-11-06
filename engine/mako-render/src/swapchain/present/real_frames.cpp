@@ -363,6 +363,8 @@ VkResult Swapchain::presentHistoryOnly(
     const auto fallbackSubmitStarted = startPresentDiagnostic();
     fallbackCommandBuffer.begin(invocation.vk);
     fallbackCommandBuffer.end(invocation.vk);
+    resolveRelayedTimelineWait(invocation.vk, *this->syncSemaphore,
+        sourceTimelineValue);
     fallbackCommandBuffer.submit(invocation.vk,
         {}, this->syncSemaphore->handle(), sourceTimelineValue,
         std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
